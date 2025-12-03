@@ -90,7 +90,26 @@ class ProductSearchService:
         Фильтр товаров по максимальной цене, используя поле 'credit'.
         (ИСПРАВЛЕНО для использования 'credit')
         """
-        return [p for p in products if p.get('credit', 0) <= max_price]
+        try:
+            # Ensure max_price is numeric
+            max_price_num = float(max_price) if max_price else float('inf')
+
+            filtered = []
+            for p in products:
+                try:
+                    # Ensure credit is numeric
+                    credit = float(p.get('credit', 0))
+                    if credit <= max_price_num:
+                        filtered.append(p)
+                except (ValueError, TypeError):
+                    # Skip products with invalid credit values
+                    logger.warning(f"Invalid credit value for product {p.get('sku', 'unknown')}: {p.get('credit')}")
+                    continue
+
+            return filtered
+        except (ValueError, TypeError) as e:
+            logger.error(f"Invalid max_price value: {max_price}, error: {e}")
+            return products  # Return all products if max_price is invalid
     
     @classmethod
     def filter_in_stock(cls, products: list) -> list:
