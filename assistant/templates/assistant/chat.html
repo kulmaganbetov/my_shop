@@ -67,9 +67,13 @@
         </div>
 
         <div class="chat-input-container">
-            <textarea 
-                class="chat-input" 
-                id="messageInput" 
+            <input type="file" id="fileInput" accept="image/*,.pdf,.xls,.xlsx" style="display: none;" onchange="handleFileSelect(event)">
+            <button class="attach-button" id="attachButton" onclick="document.getElementById('fileInput').click()" title="Прикрепить файл">
+                📎
+            </button>
+            <textarea
+                class="chat-input"
+                id="messageInput"
                 placeholder="Напишите ваш вопрос или опишите что ищете..."
                 rows="1"
                 onkeydown="handleKeyDown(event)"
@@ -78,6 +82,10 @@
                 <span class="send-icon">📤</span>
                 <span class="send-text">Отправить</span>
             </button>
+        </div>
+        <div id="filePreview" class="file-preview" style="display: none;">
+            <span id="fileName"></span>
+            <button onclick="removeFile()">✖</button>
         </div>
     </div>
 
@@ -96,7 +104,10 @@
         
         // Сессия
         let sessionId = localStorage.getItem('chat_session_id');
-        
+
+        // Хранилище для выбранного файла
+        let selectedFile = null;
+
         // Автоматическая высота textarea
         const messageInput = document.getElementById('messageInput');
         messageInput.addEventListener('input', function() {
@@ -150,54 +161,39 @@
             return '<p>' + text + '</p>';
         }
 
-        // Отрисовка карточек товаров
+        // Отрисовка товаров в строчном формате
         function renderProducts(products) {
-            let html = '<div class="products-grid">';
-            
+            let html = '<div class="products-list">';
+
             products.forEach(product => {
                 const inStock = product.stock > 0;
-                
-                // Проверяем, существует ли credit, если нет — используем N/A
-                const currentPrice = product.credit ? formatPrice(product.credit) : 'N/A';
-                
+
+                // Проверяем наличие обеих цен
+                const creditPrice = product.credit ? formatPrice(product.credit) : 'N/A';
+                const bonusPrice = product.bonus ? formatPrice(product.bonus) : 'N/A';
+
                 html += `
-                    <div class="product-card ${inStock ? '' : 'out-of-stock'}" onclick="showProductDetails('${product.sku}')">
-                        <h4>${escapeHtml(product.name)}</h4>
-                        
-                        <div class="product-price">
-                            ${currentPrice} ₸
+                    <div class="product-line ${inStock ? '' : 'out-of-stock'}" onclick="showProductDetails('${product.sku}')">
+                        <div class="product-line-name">
+                            <strong>${escapeHtml(product.name)}</strong>
                         </div>
-                        
-                        <div class="product-details">
-                            <div class="product-detail-item">
-                                <span class="detail-label">Бренд:</span>
-                                <span class="detail-value">${escapeHtml(product.brand)}</span>
-                            </div>
-                            <div class="product-detail-item">
-                                <span class="detail-label">Наличие:</span>
-                                <span class="detail-value ${inStock ? 'in-stock' : 'out-of-stock'}">
-                                    ${inStock ? `✅ ${product.stock} шт.` : '❌ Нет в наличии'}
-                                </span>
-                            </div>
-                            <div class="product-detail-item">
-                                <span class="detail-label">Гарантия:</span>
-                                <span class="detail-value">${escapeHtml(product.warranty)}</span>
-                            </div>
+                        <div class="product-line-prices">
+                            💳 Рассрочка: <span class="price">${creditPrice} ₸</span> |
+                            💰 Скидка: <span class="price-bonus">${bonusPrice} ₸</span>
                         </div>
-                        
-                        <div class="product-badges">
-                            ${inStock ? '<span class="badge badge-success">В наличии</span>' : ''}
-                            </div>
-                        
-                        <div class="product-actions">
-                            <button class="btn-details" onclick="event.stopPropagation(); showProductDetails('${product.sku}')">
+                        <div class="product-line-info">
+                            🛡️ Гарантия: ${escapeHtml(product.warranty)} |
+                            ${inStock ? '✅ В наличии' : '❌ Нет в наличии'}
+                        </div>
+                        <div class="product-line-actions">
+                            <button class="btn-details-small" onclick="event.stopPropagation(); showProductDetails('${product.sku}')">
                                 Подробнее
                             </button>
                         </div>
                     </div>
                 `;
             });
-            
+
             html += '</div>';
             return html;
         }
@@ -221,47 +217,85 @@
             }
         }
 
+        // Обработка выбора файла
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp', 'application/pdf', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'];
+                const maxSize = 10 * 1024 * 1024; // 10MB
+
+                if (!allowedTypes.includes(file.type)) {
+                    alert('Поддерживаются только изображения (JPG, PNG), PDF и Excel файлы');
+                    return;
+                }
+
+                if (file.size > maxSize) {
+                    alert('Размер файла не должен превышать 10MB');
+                    return;
+                }
+
+                selectedFile = file;
+                document.getElementById('fileName').textContent = file.name;
+                document.getElementById('filePreview').style.display = 'block';
+            }
+        }
+
+        // Удаление выбранного файла
+        function removeFile() {
+            selectedFile = null;
+            document.getElementById('fileInput').value = '';
+            document.getElementById('filePreview').style.display = 'none';
+        }
+
         // Отправка сообщения
         async function sendMessage() {
             const input = document.getElementById('messageInput');
             const message = input.value.trim();
-            
-            if (!message) return;
-            
+
+            if (!message && !selectedFile) return;
+
             // Добавляем сообщение пользователя
-            addMessage(message, true);
+            const displayMessage = selectedFile ? `${message || 'Отправлено изображение'} 📎 ${selectedFile.name}` : message;
+            addMessage(displayMessage, true);
             input.value = '';
             input.style.height = 'auto';
-            
+
             // Отключаем ввод
             setInputEnabled(false);
             showTypingIndicator(true);
-            
+
             try {
+                const formData = new FormData();
+                formData.append('message', message || 'Анализ изображения');
+                formData.append('session_id', sessionId || '');
+
+                if (selectedFile) {
+                    formData.append('file', selectedFile);
+                }
+
                 const response = await fetch(API_URL, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ 
-                        message: message,
-                        session_id: sessionId
-                    })
+                    body: formData
                 });
-                
+
                 const data = await response.json();
-                
+
                 if (data.success) {
                     // Сохраняем session_id
                     if (data.session_id) {
                         sessionId = data.session_id;
                         localStorage.setItem('chat_session_id', sessionId);
                     }
-                    
+
                     // Добавляем ответ
                     addMessage(data.response, false, data.products || []);
                 } else {
                     addMessage('😔 Извините, произошла ошибка. Попробуйте еще раз.', false);
+                }
+
+                // Очищаем выбранный файл
+                if (selectedFile) {
+                    removeFile();
                 }
             } catch (error) {
                 console.error('Ошибка:', error);
@@ -301,16 +335,21 @@
                 
                 if (data.success && data.product) {
                     const p = data.product;
-                    
-                    // Убедимся, что price-large показывает credit
-                    const currentPrice = p.credit ? formatPrice(p.credit) : 'N/A';
-                    
+
+                    // Обе цены
+                    const creditPrice = p.credit ? formatPrice(p.credit) : 'N/A';
+                    const bonusPrice = p.bonus ? formatPrice(p.bonus) : 'N/A';
+
                     modalBody.innerHTML = `
                         <h2>${escapeHtml(p.name)}</h2>
                         <div class="product-detail-full">
                             <div class="detail-row">
-                                <span class="label">Цена (Credit):</span>
-                                <span class="value price-large">${currentPrice} ₸</span>
+                                <span class="label">💳 Рассрочка:</span>
+                                <span class="value price-large">${creditPrice} ₸</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">💰 Скидка (карта/наличные):</span>
+                                <span class="value price-large">${bonusPrice} ₸</span>
                             </div>
                             <div class="detail-row">
                                 <span class="label">Бренд:</span>
@@ -327,11 +366,11 @@
                             <div class="detail-row">
                                 <span class="label">Наличие:</span>
                                 <span class="value ${p.stock > 0 ? 'in-stock' : 'out-of-stock'}">
-                                    ${p.stock > 0 ? `✅ ${p.stock} шт.` : '❌ Нет в наличии'}
+                                    ${p.stock > 0 ? '✅ В наличии' : '❌ Нет в наличии'}
                                 </span>
                             </div>
                             <div class="detail-row">
-                                <span class="label">Гарантия:</span>
+                                <span class="label">🛡️ Гарантия:</span>
                                 <span class="value">${escapeHtml(p.warranty)}</span>
                             </div>
                             <div class="detail-row">
@@ -339,7 +378,7 @@
                                 <span class="value">${escapeHtml(p.supplier)}</span>
                             </div>
                         </div>
-                        
+
                         <div class="modal-actions">
                             <button class="btn-primary" onclick="orderProduct('${p.sku}')">
                                 Заказать

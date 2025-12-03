@@ -45,22 +45,32 @@ MAX_HISTORY_MESSAGES = 10
 def chat_assistant(request):
     """
     Основной API endpoint для чата с ассистентом
-    
-    Обрабатывает сообщения, определяет намерение (intent), ищет товары (с fallback), 
+
+    Обрабатывает сообщения, определяет намерение (intent), ищет товары (с fallback),
     и генерирует ответ с учетом истории чата (context).
+    Поддерживает загрузку файлов (изображения, PDF, Excel).
     """
     try:
-        data = json.loads(request.body)
-        user_message = data.get("message", "").strip()
-        session_id = data.get("session_id")
+        # Проверяем, есть ли файл в запросе
+        uploaded_file = request.FILES.get('file')
+
+        if uploaded_file:
+            # Обработка FormData
+            user_message = request.POST.get("message", "").strip()
+            session_id = request.POST.get("session_id")
+        else:
+            # Обработка JSON
+            data = json.loads(request.body)
+            user_message = data.get("message", "").strip()
+            session_id = data.get("session_id")
         
-        if not user_message:
+        if not user_message and not uploaded_file:
             return JsonResponse({
                 "success": False,
-                "error": "Сообщение не может быть пустым"
+                "error": "Сообщение или файл должны быть предоставлены"
             }, status=400)
-        
-        logger.info(f"Received message: {user_message[:100]}")
+
+        logger.info(f"Received message: {user_message[:100] if user_message else 'File upload'}")
         
         # Создаем или получаем сессию
         if session_id:
@@ -103,13 +113,44 @@ def chat_assistant(request):
         }]
         # ------------------------------------------------------------------
         
-        # Сохраняем сообщение пользователя (в базу)
-        ChatMessage.objects.create(
-            session=session,
-            message=user_message,
-            is_user=True
-        )
-        
+        # Обработка загруженного файла (если есть)
+        image_analysis = None
+        attachment_path = None
+
+        if uploaded_file:
+            # Проверяем тип файла
+            file_type = uploaded_file.content_type
+            logger.info(f"File uploaded: {uploaded_file.name}, type: {file_type}")
+
+            # Сохраняем сообщение пользователя с вложением
+            chat_message = ChatMessage.objects.create(
+                session=session,
+                message=user_message or "Загружено изображение",
+                is_user=True,
+                attachment=uploaded_file,
+                attachment_type=file_type
+            )
+            attachment_path = chat_message.attachment.path
+
+            # Если это изображение, анализируем его
+            if file_type.startswith('image/'):
+                image_data = uploaded_file.read()
+                image_analysis = GPTService.analyze_image(image_data, user_message)
+                logger.info(f"Image analysis completed: {image_analysis.get('summary', 'N/A')}")
+
+                # Если распознаны товары, формируем запрос для поиска
+                if image_analysis.get('detected_items'):
+                    detected_names = [item.get('name', '') for item in image_analysis['detected_items']]
+                    user_message = f"Найди товары: {', '.join(detected_names)}"
+                    logger.info(f"Generated search query from image: {user_message}")
+        else:
+            # Сохраняем сообщение пользователя (в базу) без вложения
+            ChatMessage.objects.create(
+                session=session,
+                message=user_message,
+                is_user=True
+            )
+
         # ШАГ 1: Анализируем запрос через GPT или используем принудительный SKU
         if forced_sku:
             # Имитируем результат анализа GPT для прямого поиска по SKU
@@ -169,19 +210,23 @@ def chat_assistant(request):
                     "budget": budget,
                     "requirements": analysis.get("requirements", "")
                 }
-                
+
                 selected_products = GPTService.select_best_products(
-                    products, 
-                    user_message, 
+                    products,
+                    user_message,
                     requirements
                 )
-                
+
+                # Определяем тип запроса для адаптивного ответа
+                is_detailed_query = analysis.get("is_detailed_query", False)
+
                 # ШАГ 4: Генерируем ответ с рекомендациями
                 response_text = GPTService.generate_product_response(
                     current_context,
-                    selected_products
+                    selected_products,
+                    is_detailed_query=is_detailed_query
                 )
-                
+
                 products = selected_products[:5]
                 
             else:
