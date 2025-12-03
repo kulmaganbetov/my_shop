@@ -2,13 +2,16 @@
 # assistant/services/gpt_service.py
 # ===============================
 import json
-import openai
+import os
+from openai import OpenAI
 from django.conf import settings
 import logging
+import re
 
 logger = logging.getLogger('assistant')
 
-openai.api_key = ""
+# Initialize OpenAI client with new API
+client = OpenAI(api_key=os.getenv('OPENAI_API_KEY', ''))
 
 # Вспомогательная функция для формирования массива сообщений
 def _build_messages(system_prompt: str, context: list) -> list:
@@ -63,17 +66,17 @@ class GPTService:
   "requirements": "для игр"
 }"""
         try:
-            response = openai.ChatCompletion.create(
-                model="gpt-4.1-mini",
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
                 messages=_build_messages(system_prompt, context),
                 temperature=0.3,
                 max_tokens=300
             )
-            
+
             result = json.loads(response.choices[0].message.content)
             logger.info(f"Query analysis: {result}")
             return result
-            
+
         except Exception as e:
             logger.error(f"Error analyzing query: {e}")
             return {
@@ -85,92 +88,191 @@ class GPTService:
             }
     
     @staticmethod
-    def select_pc_components(all_products_by_category: dict, user_requirements: str, budget_tier: str, max_budget: int = None) -> dict:
+    def select_pc_components(all_products_by_category: dict, user_requirements: str,
+                           budget_tier: str, max_budget: int = None) -> dict:
         """
-        Выбирает компоненты для сборки ПК из предоставленного списка товаров.
-        Ограничивает входной JSON до 10 товаров на категорию, чтобы избежать
-        превышения лимита токенов передает бюджет.
-        """
-        
-        # НОВОЕ: ОГРАНИЧЕНИЕ ВХОДНОГО КОНТЕКСТА (до 10 лучших товаров в категории)
-        LIMITED_PRODUCTS = {}
-        LIMIT_PER_CATEGORY = 10
-        # Определяем, как сортировать (для "high" - по убыванию цены, иначе - по возрастанию)
-        is_reverse = (budget_tier.lower() == 'high') or (max_budget is not None)
-        
-        for category, products in all_products_by_category.items():
-            # Сортируем по цене (credit) и берем только первые 10
-            sorted_products = sorted(
-                products, 
-                # Используем безопасное извлечение и float для сортировки
-                key=lambda p: float(p.get('credit', 0)), 
-                reverse=is_reverse
-            )
+        Выбирает оптимальные компоненты для сборки ПК с улучшенной логикой.
 
-            compact_products = [
-                {
-                    "sku": p.get('sku'),
-                    "name": p.get('name'),
-                    "credit": p.get('credit')
-                }
-                for p in sorted_products[:LIMIT_PER_CATEGORY] 
-            ]
-            LIMITED_PRODUCTS[category] = compact_products
+        Улучшения:
+        - Увеличено количество товаров для анализа (20 вместо 10)
+        - Умная сортировка и фильтрация
+        - Проверка совместимости компонентов
+        - Балансировка CPU/GPU
+        """
+
         try:
-            # Теперь products_str будет содержать максимум 6 * 10 = 60 товаров,
-            # что должно безопасно вписаться в контекстное окно (менее 10,000 токенов).
-            products_str = json.dumps(LIMITED_PRODUCTS, ensure_ascii=False, separators=(',', ':'))
+            # Подготовка компактного списка товаров для GPT
+            LIMITED_PRODUCTS = {}
+            LIMIT_PER_CATEGORY = 20  # Увеличили с 10 до 20
 
-            budget_info = f"Максимальный общий бюджет: {max_budget:,} ₸." if max_budget else "Бюджет не указан. Сосредоточьтесь на лучшем соотношении цена/качество в выбранном сегменте."
-            
-            system_prompt = f"""Ты — эксперт по сборке ПК. Твоя задача — выбрать оптимальный набор 
-            комплектующих для заданного ценового сегмента и требований пользователя.
+            # Определяем стратегию сортировки
+            sort_reverse = (budget_tier.lower() == 'high') or (max_budget and max_budget > 500000)
 
-            ВАЖНЕЙШЕЕ ПРАВИЛО: **ВЫБИРАЙТЕ SKU ТОЛЬКО ИЗ ПРЕДОСТАВЛЕННОГО СПИСКА ТОВАРОВ**. 
-            НИКОГДА НЕ ГЕНЕРИРУЙТЕ НОВЫЕ SKU ИЛИ SKU, КОТОРЫХ НЕТ В КОНТЕКСТЕ.
+            for category, products in all_products_by_category.items():
+                if not products:
+                    continue
 
-            {budget_info}
+                # Сортируем по цене
+                sorted_products = sorted(
+                    products,
+                    key=lambda p: float(p.get('credit', 0)),
+                    reverse=sort_reverse
+                )
 
-            Целевой сегмент: {budget_tier} (бюджетный, средний, дорогой).
-            Требования пользователя: {user_requirements}
+                # Создаем компактное представление с дополнительной информацией
+                compact_products = []
+                for p in sorted_products[:LIMIT_PER_CATEGORY]:
+                    product_info = {
+                        "sku": p.get('sku'),
+                        "name": p.get('name'),
+                        "credit": float(p.get('credit', 0)),
+                        "brand": p.get('brand', ''),
+                        "stock": p.get('stock', 0)
+                    }
 
-            КРИТЕРИИ ВЫБОРА:
-            1. **Совокупная Цена:** Сумма цен (поле 'credit') всех 6 компонентов должна быть **максимально близка** к **Максимальному общему бюджету**, но **КАТЕГОРИЧЕСКИ НЕ ДОЛЖНА ПРЕВЫШАТЬ** его.
-            2. **Совместимость:** CPU и Материнская плата (сокет), Видеокарта и Блок питания (мощность).
-            3. **Баланс:** Нельзя ставить дорогую видеокарту с дешевым процессором (избегать "бутылочного горлышка").
-            4. **Доступность:** Использовать только те товары, где stock > 0.
-            5. **Поля для выбора:** sku, name, credit.
+                    # Извлекаем дополнительную информацию из названия
+                    name_lower = p.get('name', '').lower()
 
-            ОБЯЗАТЕЛЬНЫЕ КОМПОНЕНТЫ: процессоры, видеокарты, материнские платы, корпуса, блоки питания, Твердотельные диски (SSD).
+                    # Для процессоров - извлекаем socket
+                    if category == "процессоры":
+                        if 'am4' in name_lower:
+                            product_info['socket'] = 'AM4'
+                        elif 'am5' in name_lower:
+                            product_info['socket'] = 'AM5'
+                        elif 'lga1700' in name_lower or '1700' in name_lower:
+                            product_info['socket'] = 'LGA1700'
+                        elif 'lga1200' in name_lower or '1200' in name_lower:
+                            product_info['socket'] = 'LGA1200'
 
-            Верни ответ ТОЛЬКО в формате JSON, где ключи — это категории, а значения — **СУЩЕСТВУЮЩИЕ SKU** SKU:
-            Пример:
-            {{
-              "процессоры": "sku_cpu_123",
-              "видеокарты": "sku_gpu_456",
-              "материнские платы": "sku_mb_789",
-              "корпуса": "sku_case_111",
-              "блоки питания": "sku_psu_222",
-              "Твердотельные диски (SSD)": "sku_ssd_333"
-            }}"""
-            
-            response = openai.ChatCompletion.create(
-                model="gpt-4.1-mini",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Собери ПК, используя только эти товары: \n\n{products_str}"}
-                ],
-                temperature=0.4,
-                max_tokens=2000 
+                    # Для материнских плат - извлекаем socket
+                    elif category == "материнские платы":
+                        if 'am4' in name_lower:
+                            product_info['socket'] = 'AM4'
+                        elif 'am5' in name_lower:
+                            product_info['socket'] = 'AM5'
+                        elif 'lga1700' in name_lower or '1700' in name_lower:
+                            product_info['socket'] = 'LGA1700'
+                        elif 'lga1200' in name_lower or '1200' in name_lower:
+                            product_info['socket'] = 'LGA1200'
+
+                    # Для видеокарт - извлекаем примерную мощность
+                    elif category == "видеокарты":
+                        # Примерная оценка на основе модели
+                        if any(model in name_lower for model in ['rtx 4090', '4090']):
+                            product_info['power_req'] = 450
+                        elif any(model in name_lower for model in ['rtx 4080', '4080', 'rtx 3090']):
+                            product_info['power_req'] = 350
+                        elif any(model in name_lower for model in ['rtx 4070', '4070', 'rtx 3080']):
+                            product_info['power_req'] = 300
+                        elif any(model in name_lower for model in ['rtx 4060', '4060', 'rtx 3070']):
+                            product_info['power_req'] = 220
+                        elif any(model in name_lower for model in ['rtx 3060', 'rx 6600']):
+                            product_info['power_req'] = 170
+                        else:
+                            product_info['power_req'] = 150
+
+                    # Для блоков питания - извлекаем мощность
+                    elif category == "блоки питания":
+                        wattage_match = re.search(r'(\d{3,4})\s*w', name_lower)
+                        if wattage_match:
+                            product_info['wattage'] = int(wattage_match.group(1))
+
+                    compact_products.append(product_info)
+
+                LIMITED_PRODUCTS[category] = compact_products
+
+            products_str = json.dumps(LIMITED_PRODUCTS, ensure_ascii=False, indent=2)
+
+            # Формируем budget_info
+            if max_budget:
+                budget_info = f"Максимальный бюджет: {max_budget:,} ₸. ВАЖНО: Общая стоимость НЕ ДОЛЖНА превышать этот бюджет!"
+            else:
+                budget_info = "Бюджет не указан. Выбери оптимальное соотношение цена/качество."
+
+            # Улучшенный system prompt с детальными инструкциями
+            system_prompt = f"""Ты — эксперт по сборке ПК. Подбери оптимальную сборку из предоставленных компонентов.
+
+{budget_info}
+Сегмент: {budget_tier}
+Требования: {user_requirements}
+
+КРИТЕРИИ ВЫБОРА:
+
+1. **БЮДЖЕТ** (КРИТИЧНО):
+   - Общая стоимость = сумма всех 6 компонентов
+   - Если бюджет указан: НЕ превышай его!
+   - Используй максимум бюджета (±5%)
+
+2. **СОВМЕСТИМОСТЬ** (ОБЯЗАТЕЛЬНО):
+   - CPU и Материнская плата: socket должны совпадать (AM4, AM5, LGA1700, LGA1200)
+   - Видеокарта и БП: мощность БП >= power_req видеокарты + 150W запас
+   - Пример: если GPU требует 300W, нужен БП минимум 450W
+
+3. **БАЛАНС КОМПОНЕНТОВ**:
+   - CPU и GPU должны быть сопоставимы по цене (соотношение 1:1.2-1.5)
+   - Не ставь дорогую GPU с дешевым CPU (bottleneck!)
+   - Материнская плата ~ 15-20% от CPU+GPU
+
+4. **ПРИОРИТЕТЫ**:
+   - Для игр: приоритет на GPU (35-40% бюджета)
+   - Для работы: баланс CPU/GPU (25-30% каждый)
+   - SSD: минимум 512GB, приоритет на известные бренды
+   - БП: запас мощности 20-30%, 80+ Bronze или выше
+
+5. **КАЧЕСТВО**:
+   - Предпочитай известные бренды
+   - stock > 0 обязательно
+
+ФОРМАТ ОТВЕТА:
+Верни ТОЛЬКО JSON с SKU (без объяснений):
+{{
+  "процессоры": "12345",
+  "видеокарты": "67890",
+  "материнские платы": "11111",
+  "корпуса": "22222",
+  "блоки питания": "33333",
+  "твердотельные диски (ssd)": "44444"
+}}
+
+ВАЖНО: Используй ТОЛЬКО SKU из предоставленного списка!"""
+
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Товары:\n\n{products_str}\n\nСобери оптимальный ПК."}
+            ]
+
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                temperature=0.3,
+                max_tokens=500
             )
 
-            # ... (остальная логика обработки JSON)
-            result = json.loads(response.choices[0].message.content)
-            logger.info(f"PC build selection successful.")
+            result_text = response.choices[0].message.content.strip()
+
+            # Очищаем от markdown если есть
+            if '```' in result_text:
+                result_text = re.sub(r'```json\s*|\s*```', '', result_text).strip()
+
+            result = json.loads(result_text)
+
+            # Валидация результата
+            required_categories = ["процессоры", "видеокарты", "материнские платы",
+                                 "корпуса", "блоки питания", "твердотельные диски (ssd)"]
+
+            if not all(cat in result for cat in required_categories):
+                logger.error(f"GPT returned incomplete build: {result}")
+                return {}
+
+            logger.info(f"PC build selection successful: {result}")
             return result
 
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON decode error in PC component selection: {e}")
+            logger.error(f"GPT response: {result_text if 'result_text' in locals() else 'N/A'}")
+            return {}
         except Exception as e:
-            logger.error(f"Error selecting PC components: {e}")
+            logger.error(f"Error selecting PC components: {e}", exc_info=True)
             return {}
             
     @staticmethod
@@ -179,13 +281,13 @@ class GPTService:
         try:
             # Используем безопасное извлечение цены
             total_price = sum(float(item.get('credit', 0)) for item in selected_build_details.values() if item.get('credit') is not None)
-            
+
             build_info = "\n".join([
                 # Используем форматирование для разделения тысяч и safe .get()
                 f"* **{category.title()}**: {details['name']} ({float(details.get('credit', 0)):,} ₸)"
                 for category, details in selected_build_details.items()
             ])
-            
+
             system_prompt = """Ты — дружелюбный AI-консультант "Роберт". Ты только что собрал идеальный ПК для клиента.
             Твой ответ должен:
             1. Подтвердить готовность сборки и сегмент.
@@ -193,13 +295,13 @@ class GPTService:
             3. Представить список выбранных компонентов.
             4. Дать краткое обоснование (для игр/работы) и похвалить сборку.
             5. Предложить добавить сборку в корзину или изменить компонент.
-            
+
             Используй эмодзи (🖥️, ✨, 💰) и Markdown."""
-            
+
             messages = [{"role": "system", "content": system_prompt}]
             # Ограничиваем историю, чтобы не перегружать промпт
-            messages.extend(context[-2:]) 
-            
+            messages.extend(context[-2:])
+
             messages.append({
                 "role": "user",
                 "content": f"""Клиент: {context[-1]['content']}
@@ -212,13 +314,13 @@ class GPTService:
 Сгенерируй финальный ответ."""
             })
 
-            response = openai.ChatCompletion.create(
-                model="gpt-4.1-mini",
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
                 messages=messages,
                 temperature=0.7,
                 max_tokens=800
             )
-            
+
             return response.choices[0].message.content
 
         except Exception as e:
@@ -236,8 +338,8 @@ class GPTService:
         try:
             products_to_analyze = products[:20]
             
-            response = openai.ChatCompletion.create(
-                model="gpt-4.1-mini",
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
                 messages=[
                     {
                         "role": "system",
@@ -352,15 +454,15 @@ class GPTService:
             })
             
             # Установим max_tokens более консервативно
-            response = openai.ChatCompletion.create(
-                model="gpt-4.1-mini",
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
                 messages=messages,
                 temperature=0.7,
                 max_tokens=800
             )
-            
+
             return response.choices[0].message.content
-            
+
         except Exception as e:
             logger.error(f"Error generating product response: {e}", exc_info=True)
             return "Извините, произошла ошибка при формировании ответа."
@@ -382,16 +484,16 @@ class GPTService:
 - Если информации нет в базе, предложи связаться с поддержкой"""
             
             messages = _build_messages(system_prompt, context)
-            
-            response = openai.ChatCompletion.create(
-                model="gpt-4.1-mini",
+
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
                 messages=messages,
                 temperature=0.7,
                 max_tokens=500
             )
-            
+
             return response.choices[0].message.content
-            
+
         except Exception as e:
             logger.error(f"Error generating FAQ response: {e}")
             return "Извините, произошла ошибка. Свяжитесь с нашей поддержкой."
@@ -405,16 +507,16 @@ class GPTService:
 Будь вежливым, профессиональным и полезным."""
             
             messages = _build_messages(system_prompt, context)
-            
-            response = openai.ChatCompletion.create(
-                model="gpt-4.1-mini",
+
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
                 messages=messages,
                 temperature=0.8,
                 max_tokens=300
             )
-            
+
             return response.choices[0].message.content
-            
+
         except Exception as e:
             logger.error(f"Error generating general response: {e}")
             return "Привет! Чем могу помочь?"
@@ -434,10 +536,10 @@ class GPTService:
             """
             
             messages = [{"role": "system", "content": system_prompt}]
-            messages.extend(context) 
-            
-            response = openai.ChatCompletion.create(
-                model="gpt-4.1-mini",
+            messages.extend(context)
+
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
                 messages=messages,
                 temperature=0.7,
                 max_tokens=200
