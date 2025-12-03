@@ -90,12 +90,50 @@ class ProductSearchService:
         Фильтр товаров по максимальной цене, используя поле 'credit'.
         (ИСПРАВЛЕНО для использования 'credit')
         """
-        return [p for p in products if p.get('credit', 0) <= max_price]
+        try:
+
+            # Ensure max_price is numeric
+
+            max_price_num = float(max_price) if max_price else float('inf')
+
+ 
+
+            filtered = []
+
+            for p in products:
+
+                try:
+
+                    # Ensure credit is numeric
+
+                    credit = float(p.get('credit', 0))
+
+                    if credit <= max_price_num:
+
+                        filtered.append(p)
+
+                except (ValueError, TypeError):
+
+                    # Skip products with invalid credit values
+
+                    logger.warning(f"Invalid credit value for product {p.get('sku', 'unknown')}: {p.get('credit')}")
+
+                    continue
+
+ 
+
+            return filtered
+
+        except (ValueError, TypeError) as e:
+
+            logger.error(f"Invalid max_price value: {max_price}, error: {e}")
+
+            return products
     
     @classmethod
     def filter_in_stock(cls, products: list) -> list:
         """Фильтр товаров в наличии"""
-        return [p for p in products if p.get('stock', 0) > 0]
+        return [p for p in products if int(p.get('stock', 0)) > 0]
 
 
     @classmethod
@@ -129,7 +167,7 @@ class ProductSearchService:
 
         for category_name in required_categories:
             # Определяем диапазон цен для категории
-            if budget:
+            if budget and isinstance(budget, (int, float)):
                 category_budget = budget * budget_allocation.get(category_name, 0.15)
                 # Добавляем гибкость ±30%
                 min_price = category_budget * 0.5
@@ -141,16 +179,22 @@ class ProductSearchService:
                     "mid": (100000, 400000),
                     "high": (300000, 2000000)
                 }
-                min_price, max_price = price_ranges.get(tier.lower(), price_ranges["mid"])
-                # Корректируем под категорию
-                if category_name == "видеокарты":
-                    min_price *= 1.5
-                    max_price *= 2
-                elif category_name in ["корпуса", "блоки питания"]:
-                    max_price *= 0.5
+ 
+                # Специальная обработка для блоков питания и корпусов
 
+                # Эти компоненты обычно значительно дешевле процессоров и видеокарт
+                if category_name in ["корпуса", "блоки питания"]:
+                    # Для БП и корпусов используем фиксированные диапазоны независимо от tier
+                    # так как их реальная стоимость в API: ~7,000 - ~200,000 тенге
+                    min_price = 0
+                    max_price = 200000  # Покрывает весь доступный диапазон в API
+                else:
+                    min_price, max_price = price_ranges.get(tier.lower(), price_ranges["mid"])
+                    # Корректируем под категорию
+                    if category_name == "видеокарты":
+                        min_price *= 1.5
+                        max_price *= 2
             logger.info(f"Fetching {category_name}: price range {min_price:.0f}-{max_price:.0f}")
-
             # Получаем товары с умной фильтрацией по цене
             products = cls.search(
                 query="",
