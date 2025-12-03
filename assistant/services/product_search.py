@@ -141,13 +141,20 @@ class ProductSearchService:
                     "mid": (100000, 400000),
                     "high": (300000, 2000000)
                 }
-                min_price, max_price = price_ranges.get(tier.lower(), price_ranges["mid"])
-                # Корректируем под категорию
-                if category_name == "видеокарты":
-                    min_price *= 1.5
-                    max_price *= 2
-                elif category_name in ["корпуса", "блоки питания"]:
-                    max_price *= 0.5
+
+                # Специальная обработка для блоков питания и корпусов
+                # Эти компоненты обычно значительно дешевле процессоров и видеокарт
+                if category_name in ["корпуса", "блоки питания"]:
+                    # Для БП и корпусов используем фиксированные диапазоны независимо от tier
+                    # так как их реальная стоимость в API: ~7,000 - ~200,000 тенге
+                    min_price = 0
+                    max_price = 200000  # Покрывает весь доступный диапазон в API
+                else:
+                    min_price, max_price = price_ranges.get(tier.lower(), price_ranges["mid"])
+                    # Корректируем под категорию
+                    if category_name == "видеокарты":
+                        min_price *= 1.5
+                        max_price *= 2
 
             logger.info(f"Fetching {category_name}: price range {min_price:.0f}-{max_price:.0f}")
 
