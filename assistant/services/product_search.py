@@ -129,7 +129,8 @@ class ProductSearchService:
 
         for category_name in required_categories:
             # Определяем диапазон цен для категории
-            if budget:
+            # Проверяем, что budget это число, а не строка типа 'pc_budget_ask'
+            if budget and isinstance(budget, (int, float)):
                 category_budget = budget * budget_allocation.get(category_name, 0.15)
                 # Добавляем гибкость ±30%
                 min_price = category_budget * 0.5
