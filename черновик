@@ -1,0 +1,204 @@
+# assistant/services/gpt_service.py
+
+import json
+import openai
+from django.conf import settings
+import logging
+
+logger = logging.getLogger('assistant')
+
+openai.api_key = "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"
+
+# НОВАЯ вспомогательная функция
+def _build_messages(system_prompt: str, context: list) -> list:
+    """Создает полный массив сообщений для OpenAI API."""
+    messages = [{"role": "system", "content": system_prompt}]
+    # Добавляем историю (которая включает текущий запрос)
+    messages.extend(context) 
+    return messages
+
+
+class GPTService:
+    """Сервис для работы с OpenAI GPT API"""
+    
+    @staticmethod
+    # Изменено: user_message -> context (история + текущий запрос)
+    def analyze_query(context: list) -> dict:
+        """Анализ запроса пользователя"""
+        system_prompt = """Ты - аналитик запросов для интернет-магазина электроники.
+...
+{
+  "intent": "product_search",
+  "category": "процессоры",
+  "search_query": "AMD Ryzen игровой",
+  "budget": 50000,
+  "requirements": "для игр"
+}"""
+        try:
+            response = openai.ChatCompletion.create(
+                model="gpt-4.1-mini",
+                # Используем вспомогательную функцию для включения контекста
+                messages=_build_messages(system_prompt, context),
+                temperature=0.3,
+                max_tokens=300
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            logger.info(f"Query analysis: {result}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error analyzing query: {e}")
+            # ... (возврат по умолчанию)
+            return {
+                "intent": "general",
+                "category": "",
+                "search_query": "",
+                "budget": None,
+                "requirements": ""
+            }
+    
+    @staticmethod
+    def select_best_products(products: list, user_query: str, requirements: dict) -> list:
+        # Этот метод не нуждается в полной истории, так как требования уже извлечены.
+        # Оставляем без изменений.
+        if not products:
+            return []
+        
+        try:
+            # ... (остальной код метода select_best_products)
+            products_to_analyze = products[:20]
+            
+            response = openai.ChatCompletion.create(
+                model="gpt-4.1-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """Ты - эксперт по подбору электроники.
+...
+Если бюджет указан, не включай товары дороже бюджета."""
+                    },
+                    {
+                        "role": "user",
+                        "content": f"""Запрос: {user_query}
+Требования: {json.dumps(requirements, ensure_ascii=False)}
+
+Товары:
+{json.dumps(products_to_analyze, ensure_ascii=False, indent=2)}"""
+                    }
+                ],
+                temperature=0.5,
+                max_tokens=200
+            )
+            
+            # ... (остальной код метода select_best_products)
+            selected_skus = json.loads(response.choices[0].message.content)
+            selected_products = [p for p in products if p.get("sku") in selected_skus]
+            selected_products.sort(key=lambda x: selected_skus.index(x.get("sku")))
+            
+            logger.info(f"Selected {len(selected_products)} products")
+            return selected_products
+            
+        except Exception as e:
+            logger.error(f"Error selecting products: {e}")
+            return products[:5]
+    
+    @staticmethod
+    # Изменено: user_message -> context (история + текущий запрос)
+    def generate_product_response(context: list, products: list) -> str:
+        """Генерация ответа с рекомендацией товаров"""
+        try:
+            products_info = "\n\n".join([
+                f"**{p['name']}**\n"
+                f"- Цена: {p['price']:,} ₸ (Розница: {p['retail']:,} ₸)\n"
+                f"- Бренд: {p['brand']}\n"
+                f"- В наличии: {p['stock']} шт.\n"
+                f"- Гарантия: {p['warranty']}\n"
+                f"- Артикул: {p.get('article', 'N/A')}" # Использовать .get('article', 'N/A') для безопасности
+                for p in products[:5]
+            ])
+            
+            system_prompt = """Ты - эксперт-консультант по электронике в интернет-магазине.
+...
+Будь дружелюбным и профессиональным."""
+            
+            # Извлекаем последний запрос пользователя
+            user_message = context[-1]['content']
+
+            # Формируем сообщения: системный промпт + история
+            messages = [{"role": "system", "content": system_prompt}]
+            messages.extend(context[:-1]) # Добавляем историю без текущего запроса
+            
+            # Добавляем текущий запрос и данные о продукте
+            messages.append({
+                "role": "user",
+                "content": f"""Запрос клиента: {user_message}
+
+Найденные товары:
+{products_info}
+
+Помоги клиенту выбрать лучший вариант."""
+            })
+            
+            response = openai.ChatCompletion.create(
+                model="gpt-4.1-mini",
+                messages=messages,
+                temperature=0.7,
+                max_tokens=800
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            logger.error(f"Error generating product response: {e}")
+            return "Извините, произошла ошибка при формировании ответа."
+    
+    @staticmethod
+    # Изменено: user_message -> context (история + текущий запрос)
+    def generate_faq_response(context: list, faq_context: str) -> str:
+        """Генерация ответа на FAQ"""
+        try:
+            system_prompt = f"""Ты - дружелюбный консультант интернет-магазина электроники.
+...
+Если информации нет в базе, предложи связаться с поддержкой"""
+            
+            # Используем вспомогательную функцию для включения контекста
+            messages = _build_messages(system_prompt, context)
+            
+            response = openai.ChatCompletion.create(
+                model="gpt-4.1-mini",
+                messages=messages,
+                temperature=0.7,
+                max_tokens=500
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            logger.error(f"Error generating FAQ response: {e}")
+            return "Извините, произошла ошибка. Свяжитесь с нашей поддержкой."
+    
+    @staticmethod
+    # Изменено: user_message -> context (история + текущий запрос)
+    def generate_general_response(context: list) -> str:
+        """Генерация общего ответа"""
+        try:
+            system_prompt = """Ты - Роберт, дружелюбный ассистент интернет-магазина электроники Over.
+...
+Будь вежливым, профессиональным и полезным."""
+            
+            # Используем вспомогательную функцию для включения контекста
+            messages = _build_messages(system_prompt, context)
+            
+            response = openai.ChatCompletion.create(
+                model="gpt-4.1-mini",
+                messages=messages,
+                temperature=0.8,
+                max_tokens=300
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            logger.error(f"Error generating general response: {e}")
+            return "Привет! Чем могу помочь?"

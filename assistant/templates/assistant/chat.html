@@ -1,0 +1,432 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OverClockers</title>
+    <link rel="stylesheet" href="{% static 'assistant/css/chat.css' %}">
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            <div class="header-logo">
+                <img src="{% static 'assistant/img/logo.svg' %}" alt="Logo" class="logo-img">
+            </div>
+            
+            <div class="header-content">
+                <h1>🤖 Роберт AI Консультант</h1>
+                <p>Умный помощник по выбору электроники</p>
+            </div>
+            <button class="clear-chat-btn" onclick="clearChat()" title="Очистить чат">
+                🗑️
+            </button>
+        </div>
+
+        <div class="chat-messages" id="chatMessages">
+            <!-- Приветственное сообщение -->
+            <div class="message assistant">
+                <div class="message-avatar">🤖</div>
+                <div class="message-content">
+                    <p><strong>Здравствуйте! 👋</strong></p>
+                    <p>Я Роберт, AI-ассистент магазина Over. Помогу вам:</p>
+                    <ul>
+                        <li>🔍 Подобрать смартфон, ноутбук или комплектующие</li>
+                        <li>💰 Найти товар по вашему бюджету</li>
+                        <li>📦 Ответить на вопросы о доставке и оплате</li>
+                        <li>⚙️ Проконсультировать по характеристикам</li>
+                    </ul>
+                    
+                    <div class="quick-questions">
+                        <div class="quick-question" onclick="sendQuickQuestion('Нужен игровой процессор до 50000 тенге')">
+                            🎮 Игровой процессор
+                        </div>
+                        <div class="quick-question" onclick="sendQuickQuestion('Порекомендуй ноутбук для работы')">
+                            💼 Ноутбук для работы
+                        </div>
+                        <div class="quick-question" onclick="sendQuickQuestion('Как оформить доставку?')">
+                            🚚 Доставка
+                        </div>
+                        <div class="quick-question" onclick="sendQuickQuestion('Какие варианты оплаты?')">
+                            💳 Оплата
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="typing-indicator" id="typingIndicator">
+            <div class="message assistant">
+                <div class="message-avatar">🤖</div>
+                <div class="typing-dots">
+                    <div class="typing-dot"></div>
+                    <div class="typing-dot"></div>
+                    <div class="typing-dot"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="chat-input-container">
+            <textarea 
+                class="chat-input" 
+                id="messageInput" 
+                placeholder="Напишите ваш вопрос или опишите что ищете..."
+                rows="1"
+                onkeydown="handleKeyDown(event)"
+            ></textarea>
+            <button class="send-button" id="sendButton" onclick="sendMessage()">
+                <span class="send-icon">📤</span>
+                <span class="send-text">Отправить</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Модальное окно для деталей товара -->
+    <div class="modal" id="productModal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal()">&times;</span>
+            <div id="modalBody"></div>
+        </div>
+    </div>
+
+    <script>
+        // Конфигурация
+        const API_URL = '/assistant/api/chat/';
+        const PRODUCT_API_URL = '/assistant/api/product/';
+        
+        // Сессия
+        let sessionId = localStorage.getItem('chat_session_id');
+        
+        // Автоматическая высота textarea
+        const messageInput = document.getElementById('messageInput');
+        messageInput.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+        });
+
+        // Добавление сообщения в чат
+        function addMessage(text, isUser, products = []) {
+            const messagesContainer = document.getElementById('chatMessages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${isUser ? 'user' : 'assistant'}`;
+            
+            let content = '';
+            
+            if (isUser) {
+                content = `
+                    <div class="message-content">
+                        <p>${escapeHtml(text)}</p>
+                    </div>
+                    <div class="message-avatar">👤</div>
+                `;
+            } else {
+                content = `
+                    <div class="message-avatar">🤖</div>
+                    <div class="message-content">
+                        ${formatMessage(text)}
+                        ${products && products.length > 0 ? renderProducts(products) : ''}
+                    </div>
+                `;
+            }
+            
+            messageDiv.innerHTML = content;
+            messagesContainer.appendChild(messageDiv);
+            scrollToBottom();
+        }
+
+        // Форматирование сообщения (поддержка Markdown)
+        function formatMessage(text) {
+            // Преобразование ** в bold
+            text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+            
+            // Преобразование * списков
+            text = text.replace(/^\* (.+)$/gm, '<li>$1</li>');
+            text = text.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+            
+            // Преобразование переносов строк
+            text = text.replace(/\n\n/g, '</p><p>');
+            text = text.replace(/\n/g, '<br>');
+            
+            return '<p>' + text + '</p>';
+        }
+
+        // Отрисовка карточек товаров
+        function renderProducts(products) {
+            let html = '<div class="products-grid">';
+            
+            products.forEach(product => {
+                const inStock = product.stock > 0;
+                
+                // Проверяем, существует ли credit, если нет — используем N/A
+                const currentPrice = product.credit ? formatPrice(product.credit) : 'N/A';
+                
+                html += `
+                    <div class="product-card ${inStock ? '' : 'out-of-stock'}" onclick="showProductDetails('${product.sku}')">
+                        <h4>${escapeHtml(product.name)}</h4>
+                        
+                        <div class="product-price">
+                            ${currentPrice} ₸
+                        </div>
+                        
+                        <div class="product-details">
+                            <div class="product-detail-item">
+                                <span class="detail-label">Бренд:</span>
+                                <span class="detail-value">${escapeHtml(product.brand)}</span>
+                            </div>
+                            <div class="product-detail-item">
+                                <span class="detail-label">Наличие:</span>
+                                <span class="detail-value ${inStock ? 'in-stock' : 'out-of-stock'}">
+                                    ${inStock ? `✅ ${product.stock} шт.` : '❌ Нет в наличии'}
+                                </span>
+                            </div>
+                            <div class="product-detail-item">
+                                <span class="detail-label">Гарантия:</span>
+                                <span class="detail-value">${escapeHtml(product.warranty)}</span>
+                            </div>
+                        </div>
+                        
+                        <div class="product-badges">
+                            ${inStock ? '<span class="badge badge-success">В наличии</span>' : ''}
+                            </div>
+                        
+                        <div class="product-actions">
+                            <button class="btn-details" onclick="event.stopPropagation(); showProductDetails('${product.sku}')">
+                                Подробнее
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            html += '</div>';
+            return html;
+        }
+
+        // Показать индикатор печати
+        function showTypingIndicator(show) {
+            const indicator = document.getElementById('typingIndicator');
+            indicator.style.display = show ? 'block' : 'none';
+            if (show) scrollToBottom();
+        }
+
+        // Включить/выключить ввод
+        function setInputEnabled(enabled) {
+            const input = document.getElementById('messageInput');
+            const button = document.getElementById('sendButton');
+            input.disabled = !enabled;
+            button.disabled = !enabled;
+            
+            if (enabled) {
+                input.focus();
+            }
+        }
+
+        // Отправка сообщения
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            
+            if (!message) return;
+            
+            // Добавляем сообщение пользователя
+            addMessage(message, true);
+            input.value = '';
+            input.style.height = 'auto';
+            
+            // Отключаем ввод
+            setInputEnabled(false);
+            showTypingIndicator(true);
+            
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ 
+                        message: message,
+                        session_id: sessionId
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Сохраняем session_id
+                    if (data.session_id) {
+                        sessionId = data.session_id;
+                        localStorage.setItem('chat_session_id', sessionId);
+                    }
+                    
+                    // Добавляем ответ
+                    addMessage(data.response, false, data.products || []);
+                } else {
+                    addMessage('😔 Извините, произошла ошибка. Попробуйте еще раз.', false);
+                }
+            } catch (error) {
+                console.error('Ошибка:', error);
+                addMessage('❌ Не удалось подключиться к серверу. Проверьте подключение к интернету.', false);
+            } finally {
+                showTypingIndicator(false);
+                setInputEnabled(true);
+            }
+        }
+
+        // Отправка быстрого вопроса
+        function sendQuickQuestion(question) {
+            const input = document.getElementById('messageInput');
+            input.value = question;
+            sendMessage();
+        }
+
+        // Обработка нажатия клавиш
+        function handleKeyDown(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        }
+
+            // Показать детали товара
+            async function showProductDetails(sku) {
+            const modal = document.getElementById('productModal');
+            const modalBody = document.getElementById('modalBody');
+            
+            modalBody.innerHTML = '<div class="loading">Загрузка...</div>';
+            modal.style.display = 'block';
+            
+            try {
+                const response = await fetch(`${PRODUCT_API_URL}${sku}/`);
+                const data = await response.json();
+                
+                if (data.success && data.product) {
+                    const p = data.product;
+                    
+                    // Убедимся, что price-large показывает credit
+                    const currentPrice = p.credit ? formatPrice(p.credit) : 'N/A';
+                    
+                    modalBody.innerHTML = `
+                        <h2>${escapeHtml(p.name)}</h2>
+                        <div class="product-detail-full">
+                            <div class="detail-row">
+                                <span class="label">Цена (Credit):</span>
+                                <span class="value price-large">${currentPrice} ₸</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">Бренд:</span>
+                                <span class="value">${escapeHtml(p.brand)}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">Артикул:</span>
+                                <span class="value">${escapeHtml(p.article)}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">SKU:</span>
+                                <span class="value">${escapeHtml(p.sku)}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">Наличие:</span>
+                                <span class="value ${p.stock > 0 ? 'in-stock' : 'out-of-stock'}">
+                                    ${p.stock > 0 ? `✅ ${p.stock} шт.` : '❌ Нет в наличии'}
+                                </span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">Гарантия:</span>
+                                <span class="value">${escapeHtml(p.warranty)}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">Поставщик:</span>
+                                <span class="value">${escapeHtml(p.supplier)}</span>
+                            </div>
+                        </div>
+                        
+                        <div class="modal-actions">
+                            <button class="btn-primary" onclick="orderProduct('${p.sku}')">
+                                Заказать
+                            </button>
+                            <button class="btn-secondary" onclick="askAboutProduct('${escapeHtml(p.name)}')">
+                                Задать вопрос
+                            </button>
+                        </div>
+                    `;
+                } else {
+                    modalBody.innerHTML = '<p class="error">Не удалось загрузить информацию о товаре</p>';
+                }
+            } catch (error) {
+                console.error('Ошибка:', error);
+                modalBody.innerHTML = '<p class="error">Ошибка загрузки данных</p>';
+            }
+        }
+
+        // Закрыть модальное окно
+        function closeModal() {
+            document.getElementById('productModal').style.display = 'none';
+        }
+
+        // Заказать товар
+        function orderProduct(sku) {
+            closeModal();
+            const input = document.getElementById('messageInput');
+            input.value = `Хочу заказать товар SKU: ${sku}`;
+            sendMessage();
+        }
+
+        // Задать вопрос о товаре
+        function askAboutProduct(productName) {
+            closeModal();
+            const input = document.getElementById('messageInput');
+            input.value = `Расскажи подробнее про ${productName}`;
+            sendMessage();
+        }
+
+        // Очистить чат
+        function clearChat() {
+            if (confirm('Вы уверены, что хотите очистить историю чата?')) {
+                const messagesContainer = document.getElementById('chatMessages');
+                messagesContainer.innerHTML = '';
+                localStorage.removeItem('chat_session_id');
+                sessionId = null;
+                location.reload();
+            }
+        }
+
+        // Прокрутка вниз
+        function scrollToBottom() {
+            const messagesContainer = document.getElementById('chatMessages');
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        // Форматирование цены
+        function formatPrice(price) {
+            return Number(price).toLocaleString('ru-RU');
+        }
+
+        // Экранирование HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Закрытие модального окна при клике вне его
+        window.onclick = function(event) {
+            const modal = document.getElementById('productModal');
+            if (event.target === modal) {
+                closeModal();
+            }
+        }
+       
+       
+        function escapeForJS(str) {
+        return str.replace(/\\/g, '\\\\')  // экранируем обратные слэши
+              .replace(/'/g, "\\'")    // экранируем апострофы
+              .replace(/"/g, '\\"');   // экранируем двойные кавычки
+        }
+
+        // Фокус на поле ввода при загрузке
+        window.onload = function() {
+            document.getElementById('messageInput').focus();
+        }
+    </script>
+</body>
+</html>
