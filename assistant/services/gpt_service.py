@@ -8,7 +8,7 @@ import logging
 
 logger = logging.getLogger('assistant')
 
-openai.api_key = "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"
+openai.api_key = ""
 
 # Вспомогательная функция для формирования массива сообщений
 def _build_messages(system_prompt: str, context: list) -> list:
