@@ -216,9 +216,12 @@ def chat_assistant(request):
             budget = analysis.get("budget")
 
             logger.info(f"PC Build requested: tier={build_tier}, reqs={user_requirements}, budget={budget}")
-            
-            # 1. Получаем все необходимые компоненты из БД
-            all_products_by_category = ProductSearchService.get_components_for_build()
+
+            # 1. Получаем все необходимые компоненты из БД с умной фильтрацией
+            all_products_by_category = ProductSearchService.get_components_for_build(
+                budget=budget,
+                tier=build_tier
+            )
             
             required_categories = ["процессоры", "видеокарты", "материнские платы", "корпуса", "блоки питания", "твердотельные диски (ssd)"]
             
@@ -283,7 +286,8 @@ def chat_assistant(request):
                     selected_skus_by_category = GPTService.select_pc_components(
                         all_products_by_category,
                         user_requirements,
-                        build_tier
+                        build_tier,
+                        max_budget=budget
                     )
                 except Exception as e:
                     logger.error(f"GPT component selection failed: {e}", exc_info=True)
