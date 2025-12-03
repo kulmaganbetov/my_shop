@@ -90,12 +90,12 @@ class ProductSearchService:
         Фильтр товаров по максимальной цене, используя поле 'credit'.
         (ИСПРАВЛЕНО для использования 'credit')
         """
-        return [p for p in products if p.get('credit', 0) <= max_price]
+        return [p for p in products if int(p.get('credit', 0)) <= max_price]
     
     @classmethod
     def filter_in_stock(cls, products: list) -> list:
         """Фильтр товаров в наличии"""
-        return [p for p in products if p.get('stock', 0) > 0]
+        return [p for p in products if int(p.get('stock', 0)) > 0]
 
 
     @classmethod
