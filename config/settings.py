@@ -235,32 +235,129 @@ CORS_ALLOWED_ORIGINS = [
 
 CORS_ALLOW_CREDENTIALS = True
 
-# Logging
+# Logging - Улучшенная конфигурация
+LOGS_DIR = BASE_DIR / 'logs'
+LOGS_DIR.mkdir(exist_ok=True)
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
-    'handlers': {
-        'file': {
-            'level': 'INFO',
-            'class': 'logging.FileHandler',
-            'filename': BASE_DIR / 'logs' / 'app.log',
+
+    # Форматтеры для разных уровней детализации
+    'formatters': {
+        'verbose': {
+            'format': '{asctime} | {levelname:8} | {name:20} | {funcName:25} | {message}',
+            'style': '{',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
         },
+        'simple': {
+            'format': '{asctime} | {levelname:8} | {message}',
+            'style': '{',
+            'datefmt': '%H:%M:%S',
+        },
+        'detailed': {
+            'format': '{asctime} | {levelname:8} | {name} | {module}.{funcName}:{lineno} | {message}',
+            'style': '{',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
+        },
+    },
+
+    # Обработчики логов
+    'handlers': {
+        # Консоль - для разработки
         'console': {
             'level': 'DEBUG',
             'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+
+        # Основной лог файл
+        'file': {
+            'level': 'INFO',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': LOGS_DIR / 'app.log',
+            'maxBytes': 10 * 1024 * 1024,  # 10 MB
+            'backupCount': 5,
+            'formatter': 'verbose',
+            'encoding': 'utf-8',
+        },
+
+        # Отдельный файл для ошибок
+        'error_file': {
+            'level': 'ERROR',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': LOGS_DIR / 'errors.log',
+            'maxBytes': 10 * 1024 * 1024,  # 10 MB
+            'backupCount': 10,
+            'formatter': 'detailed',
+            'encoding': 'utf-8',
+        },
+
+        # Отдельный файл для assistant (чат, поиск, сборка ПК)
+        'assistant_file': {
+            'level': 'DEBUG',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': LOGS_DIR / 'assistant.log',
+            'maxBytes': 20 * 1024 * 1024,  # 20 MB
+            'backupCount': 5,
+            'formatter': 'detailed',
+            'encoding': 'utf-8',
+        },
+
+        # Отдельный файл для API запросов
+        'api_file': {
+            'level': 'DEBUG',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': LOGS_DIR / 'api_requests.log',
+            'maxBytes': 10 * 1024 * 1024,  # 10 MB
+            'backupCount': 3,
+            'formatter': 'verbose',
+            'encoding': 'utf-8',
         },
     },
+
+    # Логгеры
     'loggers': {
+        # Django логгер
         'django': {
             'handlers': ['file', 'console'],
             'level': 'INFO',
             'propagate': True,
         },
+
+        # Django запросы
+        'django.request': {
+            'handlers': ['file', 'error_file', 'console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+
+        # Основной логгер assistant
         'assistant': {
-            'handlers': ['file', 'console'],
+            'handlers': ['assistant_file', 'console', 'error_file'],
             'level': 'DEBUG',
             'propagate': False,
         },
+
+        # GPT сервис
+        'assistant.gpt': {
+            'handlers': ['assistant_file', 'console'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+
+        # Product Search
+        'assistant.search': {
+            'handlers': ['assistant_file', 'api_file', 'console'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+    },
+
+    # Root логгер
+    'root': {
+        'handlers': ['console', 'file'],
+        'level': 'INFO',
     },
 }
 

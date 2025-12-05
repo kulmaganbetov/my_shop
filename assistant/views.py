@@ -24,8 +24,13 @@ def chat_page(request):
 
 
 def log_event(session, log_type, message, severity='info', **kwargs):
-    """Утилита для логирования событий"""
+    """
+    Утилита для логирования событий в БД и файловый лог.
+
+    УЛУЧШЕНО: Детальное логирование с контекстом.
+    """
     try:
+        # Логируем в БД
         AssistantLog.objects.create(
             session=session,
             log_type=log_type,
@@ -33,8 +38,24 @@ def log_event(session, log_type, message, severity='info', **kwargs):
             message=message,
             **kwargs
         )
+
+        # Дублируем в файловый лог с дополнительным контекстом
+        session_id = session.session_id if session else 'NO_SESSION'
+        extra_info = ', '.join(f"{k}={v}" for k, v in kwargs.items() if v) if kwargs else ''
+
+        log_msg = f"[{log_type.upper()}] session={session_id[:8]}... | {message}"
+        if extra_info:
+            log_msg += f" | {extra_info}"
+
+        if severity == 'error':
+            logger.error(log_msg)
+        elif severity == 'warning':
+            logger.warning(log_msg)
+        else:
+            logger.info(log_msg)
+
     except Exception as e:
-        logger.error(f"Failed to log event: {e}")
+        logger.error(f"[LOG_EVENT] Failed to log event: {e}", exc_info=True)
 
 
 @csrf_exempt
@@ -87,20 +108,25 @@ def chat_assistant(request):
 
         # Проверяем, находится ли сессия в режиме "с менеджером"
         if session.status == 'with_manager':
-            # Если клиент пишет в режиме менеджера - сохраняем и уведомляем
+            # Если клиент пишет в режиме менеджера - только сохраняем сообщение
+            # БЕЗ автоматического ответа (убрано по запросу)
             ChatMessage.objects.create(
                 session=session,
                 message=user_message,
                 is_user=True,
                 sender_type='user'
             )
+            logger.info(f"Message saved for manager session: {session.session_id}")
+
+            # Возвращаем пустой ответ - сообщение просто сохранено
             return JsonResponse({
                 "success": True,
-                "response": "Ваше сообщение отправлено менеджеру. Ожидайте ответа.",
+                "response": "",  # Пустой ответ - без автоматического уведомления
                 "products": [],
                 "intent": "with_manager",
                 "session_id": session.session_id,
-                "with_manager": True
+                "with_manager": True,
+                "message_saved": True  # Флаг для фронтенда
             })
         
         
@@ -196,38 +222,38 @@ def chat_assistant(request):
         # ШАГ 2: Обрабатываем в зависимости от намерения
         if intent == "product_search":
             category = analysis.get("category", "")
-            search_query = analysis.get("search_query", "").strip() 
+            search_query = analysis.get("search_query", "").strip()
             budget = analysis.get("budget")
-            
-            logger.info(f"Searching products: category={category}, query={search_query}")
-            
-            # --- 1. Основной поиск (с запросом и категорией) ---
-            products = ProductSearchService.search(
-                query=search_query,
-                category=category
-            )
-            
-            # --- 2. Запасной поиск (Fallback Strategy) ---
-            # Fallback только для ОБЫЧНЫХ запросов, не для прямого SKU (который и так точен)
-            if not products and category and search_query and not forced_sku:
-                logger.warning(f"Primary search failed (q='{search_query}'). Retrying search using only category.")
-                products = ProductSearchService.search(
-                    query="", # Очищаем ограничивающий запрос
-                    category=category 
+            is_detailed_query = analysis.get("is_detailed_query", False)
+
+            logger.info(f"[PRODUCT_SEARCH] query='{search_query}', category='{category}', "
+                       f"budget={budget}, detailed={is_detailed_query}")
+
+            # Используем умный поиск с fallback стратегиями
+            if forced_sku:
+                # Прямой поиск по SKU
+                product = ProductSearchService.get_by_sku(forced_sku)
+                products = [product] if product else []
+                logger.info(f"[PRODUCT_SEARCH] Direct SKU lookup: {forced_sku}, found={bool(product)}")
+            else:
+                # Умный поиск с fallback
+                products = ProductSearchService.search_with_fallback(
+                    query=search_query,
+                    category=category,
+                    budget=budget
                 )
-            
-            # ----------------------------------------------------
-            
-            # Фильтруем по бюджету если указан
-            if budget and products:
+
+            # Фильтруем по бюджету (если еще не отфильтровано)
+            if budget and products and not forced_sku:
                 products = ProductSearchService.filter_by_price(products, budget)
-                logger.info(f"Filtered by budget {budget}: {len(products)} products")
-            
-            # Фильтруем только товары в наличии
+                logger.info(f"[PRODUCT_SEARCH] After budget filter: {len(products)} products")
+
+            # Фильтруем по наличию
             products = ProductSearchService.filter_in_stock(products)
-            
+            logger.info(f"[PRODUCT_SEARCH] After stock filter: {len(products)} products")
+
             if products:
-                # ШАГ 3: Выбираем лучшие товары через GPT
+                # Выбираем лучшие товары через GPT
                 requirements = {
                     "budget": budget,
                     "requirements": analysis.get("requirements", "")
@@ -239,10 +265,7 @@ def chat_assistant(request):
                     requirements
                 )
 
-                # Определяем тип запроса для адаптивного ответа
-                is_detailed_query = analysis.get("is_detailed_query", False)
-
-                # ШАГ 4: Генерируем ответ с рекомендациями
+                # Генерируем ответ с точными ценами
                 response_text = GPTService.generate_product_response(
                     current_context,
                     selected_products,
@@ -250,14 +273,16 @@ def chat_assistant(request):
                 )
 
                 products = selected_products[:5]
-                
+                logger.info(f"[PRODUCT_SEARCH] Final selection: {len(products)} products")
+
             else:
+                logger.warning(f"[PRODUCT_SEARCH] No products found for query='{search_query}'")
                 response_text = """К сожалению, по вашему запросу не найдено подходящих товаров в наличии. 😔
 
 Попробуйте:
-• Изменить бюджет
-• Выбрать другую категорию товаров
-• Связаться с нами для индивидуальной консультации: +7 (777) 123-45-67"""
+• Изменить бюджет или категорию
+• Уточнить название товара
+• Связаться с нами: +7 (777) 123-45-67"""
 
 
 
@@ -273,8 +298,8 @@ def chat_assistant(request):
 
 
 
-# ------------------------------------------------------------------
-        # НОВОЕ: ОБРАБОТКА СБОРКИ ПК
+        # ------------------------------------------------------------------
+        # ОБРАБОТКА СБОРКИ ПК (УЛУЧШЕНО)
         # ------------------------------------------------------------------
         elif intent == "pc_build":
             user_requirements = analysis.get("requirements", "универсальная сборка")
@@ -282,79 +307,70 @@ def chat_assistant(request):
             budget = analysis.get("budget")
             include_peripherals = analysis.get("include_peripherals", False)
 
-            logger.info(f"PC Build requested: tier={build_tier}, reqs={user_requirements}, budget={budget}, peripherals={include_peripherals}")
+            logger.info(f"[PC_BUILD] Starting: tier={build_tier}, budget={budget}, "
+                       f"peripherals={include_peripherals}, requirements='{user_requirements}'")
 
-            # 1. Получаем все необходимые компоненты из БД с умной фильтрацией
+            # 1. Получаем все компоненты
             all_products_by_category = ProductSearchService.get_components_for_build(
                 budget=budget,
                 tier=build_tier,
                 include_peripherals=include_peripherals
             )
 
-            # Базовые категории (системный блок)
-            required_categories = ["процессоры", "видеокарты", "материнские платы", "корпуса", "блоки питания", "твердотельные диски (ssd)"]
-
-            # Добавляем периферию если запрошена
+            # Определяем требуемые категории
+            required_categories = [
+                "процессоры", "видеокарты", "материнские платы",
+                "корпуса", "блоки питания", "твердотельные диски (ssd)"
+            ]
             if include_peripherals:
                 required_categories.extend(["мониторы", "мыши", "клавиатуры"])
-            
-            # Проверка наличия всех компонентов
-            missing_components = [c for c in required_categories if c not in all_products_by_category or not all_products_by_category[c]]
-            
-            logger.info(f"Products available for build: {len(all_products_by_category)} categories found.")
-            if missing_components:
-                logger.error(f"FATAL: Missing essential categories: {missing_components}")
+
+            # Проверка наличия компонентов
+            missing_components = [
+                c for c in required_categories
+                if c not in all_products_by_category or not all_products_by_category[c]
+            ]
+
+            logger.info(f"[PC_BUILD] Found {len(all_products_by_category)}/{len(required_categories)} categories")
 
             if missing_components:
-                # ------------------------------------------------------------------
-                # 1. FALLBACK: Не удалось собрать ПК -> Рекомендуем товары в отсутствующей категории
-                # ------------------------------------------------------------------
-                
+                logger.error(f"[PC_BUILD] Missing categories: {missing_components}")
+
+                # FALLBACK: Предлагаем товары из отсутствующей категории
                 fallback_category = missing_components[0]
-                
-                # Получаем все товары в отсутствующей категории (в наличии и не в наличии)
-                # Это позволяет нам показать пользователю, что товар существует, но временно отсутствует
                 fallback_products = ProductSearchService.search(
-                    query=user_requirements or "", # используем требования пользователя
+                    query="",
                     category=fallback_category,
-                    limit=50 # Ограничиваем для GPT
+                    limit=50
                 )
-                
-                if fallback_products:
-                    # Генерируем ответ, объясняя сбой и предлагая альтернативу
-                    response_text = f"""😔 Извините, но я не могу собрать ПК прямо сейчас. 
-                    В наличии отсутствуют следующие обязательные компоненты: **{', '.join(missing_components)}** (например, {fallback_category}).
-                    
-                    Однако, я могу предложить вам **лучшие {fallback_category}** по вашим требованиям:"""
 
-                    requirements_data = {
-                        "budget": None,
-                        "requirements": user_requirements
-                    }
-                    
+                if fallback_products:
+                    response_text = f"""😔 К сожалению, не удалось собрать полную конфигурацию ПК.
+
+**Отсутствуют в наличии:** {', '.join(missing_components)}
+
+Вот лучшие варианты из категории **{fallback_category}**:"""
+
                     selected_products = GPTService.select_best_products(
-                        fallback_products, 
-                        user_message, 
-                        requirements_data
+                        fallback_products,
+                        user_message,
+                        {"budget": budget, "requirements": user_requirements}
                     )
-                    
-                    # Генерируем ответ с рекомендациями
-                    response_text += GPTService.generate_product_response(
+
+                    response_text += "\n\n" + GPTService.generate_product_response(
                         current_context,
                         selected_products
                     )
-                    
                     products = selected_products[:5]
                 else:
-                    # Если даже по одной категории ничего не нашли
-                    response_text = f"""😔 Извините, но я не смог собрать ПК. Произошла ошибка при поиске: в базе магазина полностью отсутствуют товары категории **{fallback_category}**. Пожалуйста, попробуйте изменить запрос или свяжитесь с поддержкой."""
-                    
+                    response_text = f"""😔 Не удалось собрать ПК - отсутствуют товары категории **{fallback_category}**.
+
+Свяжитесь с нами: +7 (777) 123-45-67"""
+
             else:
-                # ------------------------------------------------------------------
-                # 2. УСПЕШНАЯ СБОРКА
-                # ------------------------------------------------------------------
-                
-                # 2. GPT выбирает лучшие компоненты и проверяет совместимость
+                # УСПЕШНАЯ СБОРКА
+                logger.info("[PC_BUILD] All categories available, selecting components...")
+
                 try:
                     selected_skus_by_category = GPTService.select_pc_components(
                         all_products_by_category,
@@ -363,46 +379,50 @@ def chat_assistant(request):
                         max_budget=budget,
                         include_peripherals=include_peripherals
                     )
+                    logger.info(f"[PC_BUILD] GPT selected: {selected_skus_by_category}")
                 except Exception as e:
-                    logger.error(f"GPT component selection failed: {e}", exc_info=True)
-                    selected_skus_by_category = {} # В случае ошибки GPT возвращаем пустой словарь
-                
-                logger.info(f"GPT returned {len(selected_skus_by_category)} selected components.")
+                    logger.error(f"[PC_BUILD] GPT selection failed: {e}", exc_info=True)
+                    selected_skus_by_category = {}
 
-                # 3. Собираем детали выбранных SKU для финального ответа
+                # Валидируем выбранные SKU
                 selected_build_details = {}
-                
-                # Проверяем, что GPT вернул все 6 категорий
+                validation_errors = []
+
                 if len(selected_skus_by_category) == len(required_categories):
                     for category, sku in selected_skus_by_category.items():
-                        
-                        # --- КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: ИЩЕМ В API ПО SKU ---
-                        product_detail = ProductSearchService.get_by_sku(sku) # Точечный запрос к API
-                        
+                        product_detail = ProductSearchService.get_by_sku(sku)
+
                         if product_detail:
                             selected_build_details[category] = product_detail
+                            logger.debug(f"[PC_BUILD] ✓ {category}: {product_detail.get('name')} "
+                                        f"({product_detail.get('credit')} ₸)")
                         else:
-                            # Если API не подтвердил SKU, прерываем
-                            logger.error(f"SKU '{sku}' returned by GPT not found in API. Aborting build.")
-                            selected_build_details = {} 
-                            break 
+                            validation_errors.append(f"{category} (SKU: {sku})")
+                            logger.error(f"[PC_BUILD] ✗ {category}: SKU {sku} not found in API")
 
-                # 4. Генерируем финальный ответ
+                # Генерируем ответ
                 if len(selected_build_details) == len(required_categories):
+                    # Все компоненты валидны
+                    total_price = sum(
+                        float(p.get('credit', 0))
+                        for p in selected_build_details.values()
+                    )
+                    logger.info(f"[PC_BUILD] SUCCESS! Total price: {total_price:,.0f} ₸")
+
                     response_text = GPTService.generate_pc_build_response(
                         current_context,
                         selected_build_details
                     )
-                    # При успешной сборке, вернем список деталей для отрисовки
                     products = list(selected_build_details.values())
+
                 else:
-                    response_text = """К сожалению, не удалось подобрать **совместимую сборку** или GPT не вернул полный комплект компонентов. 
-                    
-                    Возможные причины:
-                    1. Несовместимость выбранных GPT комплектующих.
-                    2. В базе нет компонентов, удовлетворяющих вашим требованиям и совместимости.
-                    
-                    Попробуйте изменить требования к ПК или свяжитесь с консультантом."""
+                    # Ошибка валидации
+                    logger.error(f"[PC_BUILD] Validation failed: {validation_errors}")
+                    response_text = f"""😔 Не удалось собрать совместимую конфигурацию.
+
+**Проблема:** Некоторые компоненты недоступны: {', '.join(validation_errors) if validation_errors else 'неизвестная ошибка'}
+
+Попробуйте изменить бюджет или требования, либо свяжитесь с консультантом."""
 
         
         elif intent == "faq":
@@ -436,16 +456,28 @@ def chat_assistant(request):
         # Вычисляем время ответа
         response_time = int((time.time() - start_time) * 1000)
 
-        # Логируем ответ бота
+        # Детальное логирование результата
         log_event(
-            session, 'bot_response', 'Ответ бота',
-            user_input=user_message,
-            bot_output=response_text[:500],
+            session, 'bot_response', 'Ответ бота сгенерирован',
+            user_input=user_message[:200] if user_message else '',
+            bot_output=response_text[:500] if response_text else '',
             intent=intent,
             response_time_ms=response_time
         )
 
-        logger.info(f"Response generated successfully. Intent: {intent}, Products: {len(products)}, Time: {response_time}ms")
+        # Структурированный лог для мониторинга
+        logger.info(
+            f"[CHAT_COMPLETE] "
+            f"session={session.session_id[:8]}... | "
+            f"intent={intent} | "
+            f"products={len(products)} | "
+            f"time={response_time}ms | "
+            f"query_len={len(user_message) if user_message else 0}"
+        )
+
+        # Предупреждение о медленных запросах
+        if response_time > 5000:
+            logger.warning(f"[SLOW_REQUEST] {response_time}ms for intent={intent}")
 
         # Возвращаем ответ
         return JsonResponse({
@@ -457,22 +489,31 @@ def chat_assistant(request):
             "with_manager": session.status in ['pending_manager', 'with_manager']
         })
 
-    except json.JSONDecodeError:
-        logger.error("Invalid JSON in request")
+    except json.JSONDecodeError as e:
+        logger.error(f"[CHAT_ERROR] Invalid JSON: {e}")
         return JsonResponse({
             "success": False,
             "error": "Неверный формат данных"
         }, status=400)
 
     except Exception as e:
-        logger.error(f"Error in chat_assistant: {str(e)}", exc_info=True)
+        # Вычисляем время до ошибки
+        error_time = int((time.time() - start_time) * 1000) if 'start_time' in locals() else 0
 
-        # Логируем ошибку
-        if 'session' in locals():
+        logger.error(
+            f"[CHAT_ERROR] Exception in chat_assistant: {type(e).__name__}: {str(e)} | "
+            f"time={error_time}ms",
+            exc_info=True
+        )
+
+        # Логируем ошибку в БД если сессия существует
+        if 'session' in locals() and session:
             log_event(
-                session, 'error', f'Ошибка обработки: {str(e)}',
+                session, 'error',
+                f'Критическая ошибка: {type(e).__name__}',
                 severity='error',
-                error_details=str(e)
+                error_details=str(e)[:500],
+                response_time_ms=error_time
             )
 
         return JsonResponse({
