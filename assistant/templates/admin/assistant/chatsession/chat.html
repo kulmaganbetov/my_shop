@@ -249,6 +249,15 @@
     const csrfToken = '{{ csrf_token }}';
     let lastMessageId = {{ chat_messages.last.pk|default:0 }};
 
+    // Debug: проверяем инициализацию переменных
+    console.log('=== Chat Initialization ===');
+    console.log('Session ID:', sessionId);
+    console.log('Send URL:', sendUrl);
+    console.log('Messages URL:', messagesUrl);
+    console.log('CSRF Token:', csrfToken ? 'Present' : 'Missing');
+    console.log('Last Message ID:', lastMessageId);
+    console.log('==========================');
+
     // Прокрутка вниз
     function scrollToBottom() {
         const container = document.getElementById('chatMessages');
@@ -286,7 +295,14 @@
         const button = document.getElementById('sendButton');
         const message = input.value.trim();
 
-        if (!message) return;
+        if (!message) {
+            console.log('Empty message, not sending');
+            return;
+        }
+
+        console.log('Sending message:', message);
+        console.log('Send URL:', sendUrl);
+        console.log('CSRF Token:', csrfToken ? 'Present' : 'Missing');
 
         button.disabled = true;
         input.value = '';
@@ -295,6 +311,7 @@
             const formData = new FormData();
             formData.append('message', message);
 
+            console.log('Making fetch request...');
             const response = await fetch(sendUrl, {
                 method: 'POST',
                 headers: {
@@ -303,7 +320,14 @@
                 body: formData
             });
 
+            console.log('Response status:', response.status);
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
             const data = await response.json();
+            console.log('Response data:', data);
 
             if (data.success) {
                 // Сообщение будет добавлено через polling
@@ -312,8 +336,8 @@
                 alert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
             }
         } catch (error) {
-            console.error('Error:', error);
-            alert('Ошибка отправки сообщения');
+            console.error('Error details:', error);
+            alert('Ошибка отправки сообщения: ' + error.message);
         } finally {
             button.disabled = false;
             input.focus();
