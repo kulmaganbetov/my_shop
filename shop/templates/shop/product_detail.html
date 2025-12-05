@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Товар {{ sku }} - OverClockers</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        header {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .breadcrumbs {
+            color: #666;
+            margin-bottom: 10px;
+        }
+
+        .breadcrumbs a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        .breadcrumbs a:hover {
+            text-decoration: underline;
+        }
+
+        .product-detail {
+            background: white;
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .product-header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        .product-header h1 {
+            color: #333;
+            font-size: 2em;
+            margin-bottom: 20px;
+        }
+
+        .sku-badge {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-weight: 600;
+        }
+
+        .info-section {
+            margin-top: 40px;
+            padding: 30px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+
+        .info-section h2 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+
+        .info-section p {
+            color: #666;
+            line-height: 1.8;
+            font-size: 1.1em;
+        }
+
+        .cta-section {
+            margin-top: 40px;
+            text-align: center;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 15px 40px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-decoration: none;
+            border-radius: 10px;
+            font-size: 1.1em;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+
+        .btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="breadcrumbs">
+                <a href="/">Главная</a> /
+                <a href="/products/">Каталог</a> /
+                SKU: {{ sku }}
+            </div>
+        </header>
+
+        <div class="product-detail">
+            <div class="product-header">
+                <h1>Страница товара</h1>
+                <div class="sku-badge">SKU: {{ sku }}</div>
+            </div>
+
+            <div class="info-section">
+                <h2>🔍 Информация о товаре</h2>
+                <p>Детальная страница товара находится в разработке.</p>
+                <p>Для получения полной информации о товаре, пожалуйста, воспользуйтесь нашим AI-консультантом.</p>
+            </div>
+
+            <div class="cta-section">
+                <a href="/assistant/" class="btn">Спросить у AI-Консультанта</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
