@@ -3,8 +3,13 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OverClockers</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#667eea">
+    <meta name="description" content="AI Консультант - умный помощник по выбору электроники">
+    <title>Роберт AI - Консультант</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{% static 'assistant/css/chat.css' %}">
 </head>
 <body>
@@ -13,10 +18,22 @@
             <div class="header-logo">
                 <img src="{% static 'assistant/img/logo.svg' %}" alt="Logo" class="logo-img">
             </div>
-            
+
             <div class="header-content">
-                <h1>🤖 Роберт AI Консультант</h1>
-                <p>Умный помощник по выбору электроники</p>
+                <h1>Роберт AI Консультант</h1>
+                <div class="status-indicator">
+                    <span class="status-dot"></span>
+                    <span>Онлайн</span>
+                </div>
+            </div>
+
+            <div class="header-actions">
+                <button class="theme-toggle" onclick="toggleTheme()" title="Сменить тему">
+                    <span id="themeIcon">🌙</span>
+                </button>
+                <button class="clear-chat-btn" onclick="clearChat()" title="Очистить чат">
+                    🗑️
+                </button>
             </div>
             <button class="manager-btn" id="managerBtn" onclick="requestManager()" title="Позвать менеджера">
                 👨‍💼 Менеджер
@@ -35,14 +52,14 @@
                 <div class="message-avatar">🤖</div>
                 <div class="message-content">
                     <p><strong>Здравствуйте! 👋</strong></p>
-                    <p>Я Роберт, AI-ассистент магазина Over. Помогу вам:</p>
+                    <p>Я Роберт, AI-ассистент магазина. Помогу вам:</p>
                     <ul>
                         <li>🔍 Подобрать смартфон, ноутбук или комплектующие</li>
                         <li>💰 Найти товар по вашему бюджету</li>
                         <li>📦 Ответить на вопросы о доставке и оплате</li>
                         <li>⚙️ Проконсультировать по характеристикам</li>
                     </ul>
-                    
+
                     <div class="quick-questions">
                         <div class="quick-question" onclick="sendQuickQuestion('Нужен игровой процессор до 50000 тенге')">
                             🎮 Игровой процессор
@@ -57,6 +74,7 @@
                             💳 Оплата
                         </div>
                     </div>
+                    <div class="message-time">Сейчас</div>
                 </div>
             </div>
         </div>
@@ -80,12 +98,12 @@
             <textarea
                 class="chat-input"
                 id="messageInput"
-                placeholder="Напишите ваш вопрос или опишите что ищете..."
+                placeholder="Напишите ваш вопрос..."
                 rows="1"
                 onkeydown="handleKeyDown(event)"
             ></textarea>
             <button class="send-button" id="sendButton" onclick="sendMessage()">
-                <span class="send-icon">📤</span>
+                <span class="send-icon">➤</span>
                 <span class="send-text">Отправить</span>
             </button>
         </div>
@@ -107,12 +125,37 @@
         // Конфигурация
         const API_URL = '/assistant/api/chat/';
         const PRODUCT_API_URL = '/assistant/api/product/';
-        
+
         // Сессия
         let sessionId = localStorage.getItem('chat_session_id');
 
         // Хранилище для выбранного файла
         let selectedFile = null;
+
+        // Тема
+        let currentTheme = localStorage.getItem('chat_theme') || 'light';
+
+        // Инициализация темы
+        function initTheme() {
+            if (currentTheme === 'dark') {
+                document.documentElement.setAttribute('data-theme', 'dark');
+                document.getElementById('themeIcon').textContent = '☀️';
+            }
+        }
+
+        // Переключение темы
+        function toggleTheme() {
+            currentTheme = currentTheme === 'light' ? 'dark' : 'light';
+            localStorage.setItem('chat_theme', currentTheme);
+
+            if (currentTheme === 'dark') {
+                document.documentElement.setAttribute('data-theme', 'dark');
+                document.getElementById('themeIcon').textContent = '☀️';
+            } else {
+                document.documentElement.removeAttribute('data-theme');
+                document.getElementById('themeIcon').textContent = '🌙';
+            }
+        }
 
         // Автоматическая высота textarea
         const messageInput = document.getElementById('messageInput');
@@ -120,6 +163,14 @@
             this.style.height = 'auto';
             this.style.height = Math.min(this.scrollHeight, 120) + 'px';
         });
+
+        // Форматирование времени
+        function formatTime(date) {
+            return date.toLocaleTimeString('ru-RU', {
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
 
         // Добавление сообщения в чат
         function addMessage(text, isUser) {
@@ -133,6 +184,7 @@
                 content = `
                     <div class="message-content">
                         <p>${escapeHtml(text)}</p>
+                        <div class="message-time">${currentTime}</div>
                     </div>
                     <div class="message-avatar">👤</div>
                 `;
@@ -154,15 +206,15 @@
         function formatMessage(text) {
             // Преобразование ** в bold
             text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-            
+
             // Преобразование * списков
             text = text.replace(/^\* (.+)$/gm, '<li>$1</li>');
             text = text.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
-            
+
             // Преобразование переносов строк
             text = text.replace(/\n\n/g, '</p><p>');
             text = text.replace(/\n/g, '<br>');
-            
+
             return '<p>' + text + '</p>';
         }
 
@@ -180,7 +232,7 @@
             const button = document.getElementById('sendButton');
             input.disabled = !enabled;
             button.disabled = !enabled;
-            
+
             if (enabled) {
                 input.focus();
             }
@@ -205,7 +257,7 @@
 
                 selectedFile = file;
                 document.getElementById('fileName').textContent = file.name;
-                document.getElementById('filePreview').style.display = 'block';
+                document.getElementById('filePreview').style.display = 'flex';
             }
         }
 
@@ -259,7 +311,7 @@
                     // Добавляем ответ (только текст)
                     addMessage(data.response, false);
                 } else {
-                    addMessage('😔 Извините, произошла ошибка. Попробуйте еще раз.', false);
+                    addMessage('Извините, произошла ошибка. Попробуйте еще раз.', false);
                 }
 
                 // Очищаем выбранный файл
@@ -268,7 +320,7 @@
                 }
             } catch (error) {
                 console.error('Ошибка:', error);
-                addMessage('❌ Не удалось подключиться к серверу. Проверьте подключение к интернету.', false);
+                addMessage('Не удалось подключиться к серверу. Проверьте подключение к интернету.', false);
             } finally {
                 showTypingIndicator(false);
                 setInputEnabled(true);
@@ -290,22 +342,20 @@
             }
         }
 
-            // Показать детали товара
-            async function showProductDetails(sku) {
+        // Показать детали товара
+        async function showProductDetails(sku) {
             const modal = document.getElementById('productModal');
             const modalBody = document.getElementById('modalBody');
-            
+
             modalBody.innerHTML = '<div class="loading">Загрузка...</div>';
             modal.style.display = 'block';
-            
+
             try {
                 const response = await fetch(`${PRODUCT_API_URL}${sku}/`);
                 const data = await response.json();
-                
+
                 if (data.success && data.product) {
                     const p = data.product;
-
-                    // Обе цены
                     const creditPrice = p.credit ? formatPrice(p.credit) : 'N/A';
                     const bonusPrice = p.bonus ? formatPrice(p.bonus) : 'N/A';
 
@@ -352,7 +402,7 @@
                             <button class="btn-primary" onclick="orderProduct('${p.sku}')">
                                 Заказать
                             </button>
-                            <button class="btn-secondary" onclick="askAboutProduct('${escapeHtml(p.name)}')">
+                            <button class="btn-secondary" onclick="askAboutProduct('${escapeForJS(p.name)}')">
                                 Задать вопрос
                             </button>
                         </div>
@@ -401,7 +451,10 @@
         // Прокрутка вниз
         function scrollToBottom() {
             const messagesContainer = document.getElementById('chatMessages');
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            messagesContainer.scrollTo({
+                top: messagesContainer.scrollHeight,
+                behavior: 'smooth'
+            });
         }
 
         // Форматирование цены
@@ -416,19 +469,19 @@
             return div.innerHTML;
         }
 
+        // Экранирование для JS строк
+        function escapeForJS(str) {
+            return str.replace(/\\/g, '\\\\')
+                      .replace(/'/g, "\\'")
+                      .replace(/"/g, '\\"');
+        }
+
         // Закрытие модального окна при клике вне его
         window.onclick = function(event) {
             const modal = document.getElementById('productModal');
             if (event.target === modal) {
                 closeModal();
             }
-        }
-       
-       
-        function escapeForJS(str) {
-        return str.replace(/\\/g, '\\\\')  // экранируем обратные слэши
-              .replace(/'/g, "\\'")    // экранируем апострофы
-              .replace(/"/g, '\\"');   // экранируем двойные кавычки
         }
 
         // === МЕНЕДЖЕР ===
@@ -569,6 +622,7 @@
 
         // Фокус на поле ввода при загрузке
         window.onload = function() {
+            initTheme();
             document.getElementById('messageInput').focus();
 
             // Проверяем статус сессии при загрузке
