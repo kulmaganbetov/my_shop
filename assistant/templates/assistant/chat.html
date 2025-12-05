@@ -18,9 +18,15 @@
                 <h1>🤖 Роберт AI Консультант</h1>
                 <p>Умный помощник по выбору электроники</p>
             </div>
+            <button class="manager-btn" id="managerBtn" onclick="requestManager()" title="Позвать менеджера">
+                👨‍💼 Менеджер
+            </button>
             <button class="clear-chat-btn" onclick="clearChat()" title="Очистить чат">
                 🗑️
             </button>
+        </div>
+        <div class="manager-banner" id="managerBanner" style="display: none;">
+            <span id="managerStatus">🔔 Ожидание менеджера...</span>
         </div>
 
         <div class="chat-messages" id="chatMessages">
@@ -116,13 +122,13 @@
         });
 
         // Добавление сообщения в чат
-        function addMessage(text, isUser, products = []) {
+        function addMessage(text, isUser) {
             const messagesContainer = document.getElementById('chatMessages');
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${isUser ? 'user' : 'assistant'}`;
-            
+
             let content = '';
-            
+
             if (isUser) {
                 content = `
                     <div class="message-content">
@@ -135,11 +141,10 @@
                     <div class="message-avatar">🤖</div>
                     <div class="message-content">
                         ${formatMessage(text)}
-                        ${products && products.length > 0 ? renderProducts(products) : ''}
                     </div>
                 `;
             }
-            
+
             messageDiv.innerHTML = content;
             messagesContainer.appendChild(messageDiv);
             scrollToBottom();
@@ -161,42 +166,6 @@
             return '<p>' + text + '</p>';
         }
 
-        // Отрисовка товаров в строчном формате
-        function renderProducts(products) {
-            let html = '<div class="products-list">';
-
-            products.forEach(product => {
-                const inStock = product.stock > 0;
-
-                // Проверяем наличие обеих цен
-                const creditPrice = product.credit ? formatPrice(product.credit) : 'N/A';
-                const bonusPrice = product.bonus ? formatPrice(product.bonus) : 'N/A';
-
-                html += `
-                    <div class="product-line ${inStock ? '' : 'out-of-stock'}" onclick="showProductDetails('${product.sku}')">
-                        <div class="product-line-name">
-                            <strong>${escapeHtml(product.name)}</strong>
-                        </div>
-                        <div class="product-line-prices">
-                            💳 Рассрочка: <span class="price">${creditPrice} ₸</span> |
-                            💰 Скидка: <span class="price-bonus">${bonusPrice} ₸</span>
-                        </div>
-                        <div class="product-line-info">
-                            🛡️ Гарантия: ${escapeHtml(product.warranty)} |
-                            ${inStock ? '✅ В наличии' : '❌ Нет в наличии'}
-                        </div>
-                        <div class="product-line-actions">
-                            <button class="btn-details-small" onclick="event.stopPropagation(); showProductDetails('${product.sku}')">
-                                Подробнее
-                            </button>
-                        </div>
-                    </div>
-                `;
-            });
-
-            html += '</div>';
-            return html;
-        }
 
         // Показать индикатор печати
         function showTypingIndicator(show) {
@@ -287,8 +256,8 @@
                         localStorage.setItem('chat_session_id', sessionId);
                     }
 
-                    // Добавляем ответ
-                    addMessage(data.response, false, data.products || []);
+                    // Добавляем ответ (только текст)
+                    addMessage(data.response, false);
                 } else {
                     addMessage('😔 Извините, произошла ошибка. Попробуйте еще раз.', false);
                 }
@@ -462,9 +431,165 @@
               .replace(/"/g, '\\"');   // экранируем двойные кавычки
         }
 
+        // === МЕНЕДЖЕР ===
+        let withManager = false;
+        let lastMessageId = 0;
+        let pollingInterval = null;
+
+        // Запрос помощи менеджера
+        async function requestManager() {
+            if (!sessionId) {
+                alert('Сначала начните диалог с ботом');
+                return;
+            }
+
+            if (withManager) {
+                alert('Вы уже в режиме общения с менеджером');
+                return;
+            }
+
+            if (!confirm('Хотите связаться с менеджером?')) return;
+
+            try {
+                const response = await fetch('/assistant/api/request-manager/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        reason: 'Клиент запросил помощь'
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    addMessage(data.message, false);
+                    setManagerMode(true, 'pending');
+                    startPolling();
+                } else {
+                    alert('Ошибка: ' + (data.error || 'Не удалось вызвать менеджера'));
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Ошибка подключения');
+            }
+        }
+
+        // Установка режима менеджера
+        function setManagerMode(active, status = 'pending') {
+            withManager = active;
+            const banner = document.getElementById('managerBanner');
+            const statusText = document.getElementById('managerStatus');
+            const managerBtn = document.getElementById('managerBtn');
+
+            if (active) {
+                banner.style.display = 'block';
+                managerBtn.style.display = 'none';
+
+                if (status === 'pending') {
+                    statusText.textContent = '🔔 Ожидание менеджера...';
+                    banner.style.background = '#fff3e0';
+                } else if (status === 'with_manager') {
+                    statusText.textContent = '👨‍💼 Вы общаетесь с менеджером';
+                    banner.style.background = '#e8f5e9';
+                }
+            } else {
+                banner.style.display = 'none';
+                managerBtn.style.display = 'inline-flex';
+            }
+        }
+
+        // Polling для новых сообщений
+        function startPolling() {
+            if (pollingInterval) return;
+
+            pollingInterval = setInterval(async () => {
+                if (!sessionId) return;
+
+                try {
+                    const response = await fetch(`/assistant/api/messages/${sessionId}/?last_id=${lastMessageId}`);
+                    const data = await response.json();
+
+                    if (data.success) {
+                        // Обновляем статус
+                        if (data.with_manager) {
+                            setManagerMode(true, data.session_status);
+                        }
+
+                        // Добавляем новые сообщения
+                        if (data.messages && data.messages.length > 0) {
+                            data.messages.forEach(msg => {
+                                // Не показываем свои сообщения повторно
+                                if (!msg.is_user) {
+                                    addMessageFromPolling(msg);
+                                }
+                                lastMessageId = Math.max(lastMessageId, msg.id);
+                            });
+                        }
+                    }
+                } catch (error) {
+                    console.error('Polling error:', error);
+                }
+            }, 3000);
+        }
+
+        // Добавление сообщения из polling
+        function addMessageFromPolling(msg) {
+            const messagesContainer = document.getElementById('chatMessages');
+
+            // Проверяем, нет ли уже этого сообщения
+            if (document.querySelector(`[data-msg-id="${msg.id}"]`)) return;
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant';
+            messageDiv.setAttribute('data-msg-id', msg.id);
+
+            const avatar = msg.sender_type === 'manager' ? '👨‍💼' : '🤖';
+
+            messageDiv.innerHTML = `
+                <div class="message-avatar">${avatar}</div>
+                <div class="message-content">
+                    ${formatMessage(msg.message)}
+                </div>
+            `;
+
+            messagesContainer.appendChild(messageDiv);
+            scrollToBottom();
+        }
+
+        // Остановка polling
+        function stopPolling() {
+            if (pollingInterval) {
+                clearInterval(pollingInterval);
+                pollingInterval = null;
+            }
+        }
+
         // Фокус на поле ввода при загрузке
         window.onload = function() {
             document.getElementById('messageInput').focus();
+
+            // Проверяем статус сессии при загрузке
+            if (sessionId) {
+                checkSessionStatus();
+            }
+        }
+
+        // Проверка статуса сессии
+        async function checkSessionStatus() {
+            try {
+                const response = await fetch(`/assistant/api/status/${sessionId}/`);
+                const data = await response.json();
+
+                if (data.success && data.with_manager) {
+                    setManagerMode(true, data.status);
+                    startPolling();
+                }
+            } catch (error) {
+                console.error('Status check error:', error);
+            }
         }
     </script>
 </body>

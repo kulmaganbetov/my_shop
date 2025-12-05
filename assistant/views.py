@@ -1,43 +1,40 @@
 # assistant/views.py
 import json
 import logging
+import time
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
-import uuid 
+import uuid
 import re
 
 from .services import GPTService, ProductSearchService, FAQHandler
-from .models import ChatSession, ChatMessage
+from .models import ChatSession, ChatMessage, AssistantLog
 
 logger = logging.getLogger('assistant')
 
-# Максимальное количество сообщений для контекста (например, 10 последних сообщений, включая user и assistant)
-MAX_HISTORY_MESSAGES = 10 
+# Максимальное количество сообщений для контекста
+MAX_HISTORY_MESSAGES = 10
+
 
 def chat_page(request):
     """Страница чата с ассистентом"""
     return render(request, 'assistant/chat.html')
 
 
-import json
-import logging
-from django.http import JsonResponse
-from django.shortcuts import render
-from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_http_methods
-import uuid 
-import re # Необходим для извлечения SKU
-
-from .services import GPTService, ProductSearchService, FAQHandler
-from .models import ChatSession, ChatMessage
-
-logger = logging.getLogger('assistant')
-
-# Максимальное количество сообщений для контекста (например, 10 последних сообщений, включая user и assistant)
-MAX_HISTORY_MESSAGES = 10 
-# (Предполагается, что другие функции views.py и константы объявлены выше)
+def log_event(session, log_type, message, severity='info', **kwargs):
+    """Утилита для логирования событий"""
+    try:
+        AssistantLog.objects.create(
+            session=session,
+            log_type=log_type,
+            severity=severity,
+            message=message,
+            **kwargs
+        )
+    except Exception as e:
+        logger.error(f"Failed to log event: {e}")
 
 
 @csrf_exempt
@@ -50,6 +47,8 @@ def chat_assistant(request):
     и генерирует ответ с учетом истории чата (context).
     Поддерживает загрузку файлов (изображения, PDF, Excel).
     """
+    start_time = time.time()
+
     try:
         # Проверяем, есть ли файл в запросе
         uploaded_file = request.FILES.get('file')
@@ -63,7 +62,7 @@ def chat_assistant(request):
             data = json.loads(request.body)
             user_message = data.get("message", "").strip()
             session_id = data.get("session_id")
-        
+
         if not user_message and not uploaded_file:
             return JsonResponse({
                 "success": False,
@@ -71,15 +70,38 @@ def chat_assistant(request):
             }, status=400)
 
         logger.info(f"Received message: {user_message[:100] if user_message else 'File upload'}")
-        
+
         # Создаем или получаем сессию
         if session_id:
             try:
                 session = ChatSession.objects.get(session_id=session_id)
             except ChatSession.DoesNotExist:
                 session = ChatSession.objects.create(session_id=session_id)
+                log_event(session, 'session_start', 'Новая сессия создана')
         else:
             session = ChatSession.objects.create(session_id=str(uuid.uuid4()))
+            log_event(session, 'session_start', 'Новая сессия создана')
+
+        # Логируем вопрос пользователя
+        log_event(session, 'user_question', 'Вопрос пользователя', user_input=user_message)
+
+        # Проверяем, находится ли сессия в режиме "с менеджером"
+        if session.status == 'with_manager':
+            # Если клиент пишет в режиме менеджера - сохраняем и уведомляем
+            ChatMessage.objects.create(
+                session=session,
+                message=user_message,
+                is_user=True,
+                sender_type='user'
+            )
+            return JsonResponse({
+                "success": True,
+                "response": "Ваше сообщение отправлено менеджеру. Ожидайте ответа.",
+                "products": [],
+                "intent": "with_manager",
+                "session_id": session.session_id,
+                "with_manager": True
+            })
         
         
         # ------------------------------------------------------------------
@@ -257,18 +279,24 @@ def chat_assistant(request):
         elif intent == "pc_build":
             user_requirements = analysis.get("requirements", "универсальная сборка")
             build_tier = analysis.get("build_tier", "mid").lower()
-            
             budget = analysis.get("budget")
+            include_peripherals = analysis.get("include_peripherals", False)
 
-            logger.info(f"PC Build requested: tier={build_tier}, reqs={user_requirements}, budget={budget}")
+            logger.info(f"PC Build requested: tier={build_tier}, reqs={user_requirements}, budget={budget}, peripherals={include_peripherals}")
 
             # 1. Получаем все необходимые компоненты из БД с умной фильтрацией
             all_products_by_category = ProductSearchService.get_components_for_build(
                 budget=budget,
-                tier=build_tier
+                tier=build_tier,
+                include_peripherals=include_peripherals
             )
-            
+
+            # Базовые категории (системный блок)
             required_categories = ["процессоры", "видеокарты", "материнские платы", "корпуса", "блоки питания", "твердотельные диски (ssd)"]
+
+            # Добавляем периферию если запрошена
+            if include_peripherals:
+                required_categories.extend(["мониторы", "мыши", "клавиатуры"])
             
             # Проверка наличия всех компонентов
             missing_components = [c for c in required_categories if c not in all_products_by_category or not all_products_by_category[c]]
@@ -332,7 +360,8 @@ def chat_assistant(request):
                         all_products_by_category,
                         user_requirements,
                         build_tier,
-                        max_budget=budget
+                        max_budget=budget,
+                        include_peripherals=include_peripherals
                     )
                 except Exception as e:
                     logger.error(f"GPT component selection failed: {e}", exc_info=True)
@@ -400,29 +429,52 @@ def chat_assistant(request):
             session=session,
             message=response_text,
             is_user=False,
+            sender_type='bot',
             intent=intent
         )
-        
-        logger.info(f"Response generated successfully. Intent: {intent}, Products: {len(products)}")
-        
+
+        # Вычисляем время ответа
+        response_time = int((time.time() - start_time) * 1000)
+
+        # Логируем ответ бота
+        log_event(
+            session, 'bot_response', 'Ответ бота',
+            user_input=user_message,
+            bot_output=response_text[:500],
+            intent=intent,
+            response_time_ms=response_time
+        )
+
+        logger.info(f"Response generated successfully. Intent: {intent}, Products: {len(products)}, Time: {response_time}ms")
+
         # Возвращаем ответ
         return JsonResponse({
             "success": True,
             "response": response_text,
             "products": products,
             "intent": intent,
-            "session_id": session.session_id
+            "session_id": session.session_id,
+            "with_manager": session.status in ['pending_manager', 'with_manager']
         })
-        
+
     except json.JSONDecodeError:
         logger.error("Invalid JSON in request")
         return JsonResponse({
             "success": False,
             "error": "Неверный формат данных"
         }, status=400)
-        
+
     except Exception as e:
         logger.error(f"Error in chat_assistant: {str(e)}", exc_info=True)
+
+        # Логируем ошибку
+        if 'session' in locals():
+            log_event(
+                session, 'error', f'Ошибка обработки: {str(e)}',
+                severity='error',
+                error_details=str(e)
+            )
+
         return JsonResponse({
             "success": False,
             "error": "Произошла ошибка при обработке запроса. Попробуйте еще раз."
@@ -496,4 +548,143 @@ def get_chat_history(request, session_id):
         return JsonResponse({
             "success": False,
             "error": "Произошла ошибка при получении истории"
+        }, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def request_manager(request):
+    """
+    API для запроса помощи менеджера
+    Клиент может вызвать менеджера если бот не справился
+    """
+    try:
+        data = json.loads(request.body)
+        session_id = data.get("session_id")
+        reason = data.get("reason", "Клиент запросил помощь менеджера")
+
+        if not session_id:
+            return JsonResponse({
+                "success": False,
+                "error": "session_id обязателен"
+            }, status=400)
+
+        try:
+            session = ChatSession.objects.get(session_id=session_id)
+        except ChatSession.DoesNotExist:
+            return JsonResponse({
+                "success": False,
+                "error": "Сессия не найдена"
+            }, status=404)
+
+        # Обновляем статус сессии
+        session.status = 'pending_manager'
+        session.save()
+
+        # Логируем передачу менеджеру
+        log_event(
+            session, 'manager_handoff',
+            'Клиент запросил помощь менеджера',
+            handoff_reason=reason
+        )
+
+        # Добавляем системное сообщение
+        system_message = "🔔 Вы запросили помощь менеджера. Ожидайте, скоро с вами свяжется наш специалист."
+        ChatMessage.objects.create(
+            session=session,
+            message=system_message,
+            is_user=False,
+            sender_type='bot',
+            intent='manager_handoff'
+        )
+
+        return JsonResponse({
+            "success": True,
+            "message": system_message,
+            "status": "pending_manager"
+        })
+
+    except json.JSONDecodeError:
+        return JsonResponse({
+            "success": False,
+            "error": "Неверный формат данных"
+        }, status=400)
+
+    except Exception as e:
+        logger.error(f"Error in request_manager: {str(e)}", exc_info=True)
+        return JsonResponse({
+            "success": False,
+            "error": "Произошла ошибка"
+        }, status=500)
+
+
+@require_http_methods(["GET"])
+def get_new_messages(request, session_id):
+    """
+    API для получения новых сообщений (используется клиентом для получения ответов менеджера)
+    """
+    try:
+        session = ChatSession.objects.get(session_id=session_id)
+        last_id = request.GET.get('last_id', 0)
+
+        # Получаем новые сообщения после last_id
+        messages = session.messages.filter(pk__gt=last_id).order_by('timestamp')
+
+        messages_data = []
+        for msg in messages:
+            messages_data.append({
+                'id': msg.pk,
+                'message': msg.message,
+                'is_user': msg.is_user,
+                'sender_type': msg.sender_type,
+                'timestamp': msg.timestamp.isoformat(),
+            })
+
+        return JsonResponse({
+            "success": True,
+            "messages": messages_data,
+            "session_status": session.status,
+            "with_manager": session.status in ['pending_manager', 'with_manager']
+        })
+
+    except ChatSession.DoesNotExist:
+        return JsonResponse({
+            "success": False,
+            "error": "Сессия не найдена"
+        }, status=404)
+
+    except Exception as e:
+        logger.error(f"Error in get_new_messages: {str(e)}", exc_info=True)
+        return JsonResponse({
+            "success": False,
+            "error": "Произошла ошибка"
+        }, status=500)
+
+
+@require_http_methods(["GET"])
+def get_session_status(request, session_id):
+    """
+    API для проверки статуса сессии
+    """
+    try:
+        session = ChatSession.objects.get(session_id=session_id)
+
+        return JsonResponse({
+            "success": True,
+            "status": session.status,
+            "with_manager": session.status in ['pending_manager', 'with_manager'],
+            "manager_name": session.manager.get_full_name() if session.manager else None
+        })
+
+    except ChatSession.DoesNotExist:
+        return JsonResponse({
+            "success": False,
+            "error": "Сессия не найдена"
+        }, status=404)
+
+    except Exception as e:
+        logger.error(f"Error in get_session_status: {str(e)}", exc_info=True)
+        return JsonResponse({
+            "success": False,
+            "error": "Произошла ошибка"
         }, status=500)

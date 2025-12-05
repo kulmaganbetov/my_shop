@@ -41,6 +41,7 @@ class GPTService:
 5. requirements: особые требования (игры, работа, учеба и т.д.)
 6. build_tier: Ценовой сегмент для сборки ("budget", "mid", "high"). (Только если бюджет не указан)
 7. is_detailed_query: true если клиент просит аналоги/рекомендации/сравнение/что лучше, false если ищет конкретную модель
+8. include_peripherals: true если клиент ЯВНО просит добавить периферию (мышь, клавиатуру, монитор) к сборке ПК. Ключевые фразы: "с монитором", "с мышкой", "с клавиатурой", "полный комплект", "рабочее место", "все для работы/игр". По умолчанию false - только системный блок.
 
 Ответь ТОЛЬКО в формате JSON без дополнительного текста.
 
@@ -48,14 +49,16 @@ class GPTService:
 {
   "intent": "pc_budget_ask",
   "requirements": "для работы",
-  "build_tier": "mid"
+  "build_tier": "mid",
+  "include_peripherals": false
 }
 
-Пример 2 (Финальная сборка, бюджет указан):
+Пример 2 (Финальная сборка с периферией):
 {
   "intent": "pc_build",
-  "requirements": "для игр",
-  "budget": 500000
+  "requirements": "для игр с монитором и мышкой",
+  "budget": 700000,
+  "include_peripherals": true
 }
 
 Пример 3 (Точный запрос - конкретная модель):
@@ -68,14 +71,12 @@ class GPTService:
   "is_detailed_query": false
 }
 
-Пример 4 (Запрос рекомендаций):
+Пример 4 (Сборка без периферии - только системный блок):
 {
-  "intent": "product_search",
-  "category": "процессоры",
-  "search_query": "AMD Ryzen игровой",
-  "budget": 50000,
+  "intent": "pc_build",
   "requirements": "для игр",
-  "is_detailed_query": true
+  "budget": 500000,
+  "include_peripherals": false
 }
 
 Ответь ТОЛЬКО в формате JSON без дополнительного текста."""
@@ -103,7 +104,8 @@ class GPTService:
     
     @staticmethod
     def select_pc_components(all_products_by_category: dict, user_requirements: str,
-                           budget_tier: str, max_budget: int = None) -> dict:
+                           budget_tier: str, max_budget: int = None,
+                           include_peripherals: bool = False) -> dict:
         """
         Выбирает оптимальные компоненты для сборки ПК с улучшенной логикой.
 
@@ -112,6 +114,7 @@ class GPTService:
         - Умная сортировка и фильтрация
         - Проверка совместимости компонентов
         - Балансировка CPU/GPU
+        - Поддержка периферии (мониторы, мыши, клавиатуры)
         """
 
         try:
@@ -203,17 +206,49 @@ class GPTService:
             else:
                 budget_info = "Бюджет не указан. Выбери оптимальное соотношение цена/качество."
 
+            # Определяем количество компонентов
+            component_count = 9 if include_peripherals else 6
+            peripherals_note = """
+6. **ПЕРИФЕРИЯ** (если запрошена):
+   - Монитор: выбирай с учетом видеокарты (для игр - 144Hz+, для работы - IPS)
+   - Мышь и клавиатура: предпочитай известные бренды (Logitech, Razer, HyperX)
+""" if include_peripherals else ""
+
+            # Формат ответа с периферией или без
+            if include_peripherals:
+                json_format = """{
+  "процессоры": "12345",
+  "видеокарты": "67890",
+  "материнские платы": "11111",
+  "корпуса": "22222",
+  "блоки питания": "33333",
+  "твердотельные диски (ssd)": "44444",
+  "мониторы": "55555",
+  "мыши": "66666",
+  "клавиатуры": "77777"
+}"""
+            else:
+                json_format = """{
+  "процессоры": "12345",
+  "видеокарты": "67890",
+  "материнские платы": "11111",
+  "корпуса": "22222",
+  "блоки питания": "33333",
+  "твердотельные диски (ssd)": "44444"
+}"""
+
             # Улучшенный system prompt с детальными инструкциями
             system_prompt = f"""Ты — эксперт по сборке ПК. Подбери оптимальную сборку из предоставленных компонентов.
 
 {budget_info}
 Сегмент: {budget_tier}
 Требования: {user_requirements}
+Периферия: {"ДА (монитор, мышь, клавиатура)" if include_peripherals else "НЕТ (только системный блок)"}
 
 КРИТЕРИИ ВЫБОРА:
 
 1. **БЮДЖЕТ** (КРИТИЧНО):
-   - Общая стоимость = сумма всех 6 компонентов
+   - Общая стоимость = сумма всех {component_count} компонентов
    - Если бюджет указан: НЕ превышай его!
    - Используй максимум бюджета (±5%)
 
@@ -236,17 +271,10 @@ class GPTService:
 5. **КАЧЕСТВО**:
    - Предпочитай известные бренды
    - stock > 0 обязательно
-
+{peripherals_note}
 ФОРМАТ ОТВЕТА:
 Верни ТОЛЬКО JSON с SKU (без объяснений):
-{{
-  "процессоры": "12345",
-  "видеокарты": "67890",
-  "материнские платы": "11111",
-  "корпуса": "22222",
-  "блоки питания": "33333",
-  "твердотельные диски (ssd)": "44444"
-}}
+{json_format}
 
 ВАЖНО: Используй ТОЛЬКО SKU из предоставленного списка!"""
 
@@ -259,7 +287,7 @@ class GPTService:
                 model="gpt-4o-mini",
                 messages=messages,
                 temperature=0.3,
-                max_tokens=500
+                max_tokens=600
             )
 
             result_text = response.choices[0].message.content.strip()
@@ -273,6 +301,10 @@ class GPTService:
             # Валидация результата
             required_categories = ["процессоры", "видеокарты", "материнские платы",
                                  "корпуса", "блоки питания", "твердотельные диски (ssd)"]
+
+            # Добавляем периферию если запрошена
+            if include_peripherals:
+                required_categories.extend(["мониторы", "мыши", "клавиатуры"])
 
             if not all(cat in result for cat in required_categories):
                 logger.error(f"GPT returned incomplete build: {result}")
