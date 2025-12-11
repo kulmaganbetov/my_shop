@@ -380,55 +380,28 @@ class GPTService:
             
     @staticmethod
     def generate_pc_build_response(context: list, selected_build_details: dict) -> str:
-        """Генерирует ответ с деталями предложенной сборки ПК."""
+        """Генерирует компактный ответ со сборкой ПК."""
         try:
-            # Используем безопасное извлечение цены
             total_price = sum(float(item.get('credit', 0)) for item in selected_build_details.values() if item.get('credit') is not None)
 
+            # Компактный формат списка компонентов
             build_info = "\n".join([
-                # Используем форматирование для разделения тысяч и safe .get()
-                f"* **{category.title()}**: {details['name']} ({float(details.get('credit', 0)):,} ₸)"
+                f"• {category.title()}: {details['name']} — {float(details.get('credit', 0)):,.0f}₸"
                 for category, details in selected_build_details.items()
             ])
 
-            system_prompt = """Ты — дружелюбный AI-консультант "Роберт". Ты только что собрал идеальный ПК для клиента.
-            Твой ответ должен:
-            1. Подтвердить готовность сборки и сегмент.
-            2. Представить финальную стоимость.
-            3. Представить список выбранных компонентов.
-            4. Дать краткое обоснование (для игр/работы) и похвалить сборку.
-            5. Предложить добавить сборку в корзину или изменить компонент.
+            # Возвращаем готовый компактный ответ без GPT
+            return f"""🖥️ **Сборка готова!**
 
-            Используй эмодзи (🖥️, ✨, 💰) и Markdown."""
-
-            messages = [{"role": "system", "content": system_prompt}]
-            # Ограничиваем историю, чтобы не перегружать промпт
-            messages.extend(context[-2:])
-
-            messages.append({
-                "role": "user",
-                "content": f"""Клиент: {context[-1]['content']}
-
-Детали сборки:
-Общая стоимость: {total_price:,} ₸
-Компоненты:
 {build_info}
 
-Сгенерируй финальный ответ."""
-            })
+💰 **Итого: {total_price:,.0f} ₸**
 
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=messages,
-                temperature=0.7,
-                max_tokens=800
-            )
-
-            return response.choices[0].message.content
+Хотите оформить или изменить компонент?"""
 
         except Exception as e:
             logger.error(f"Error generating PC build response: {e}")
-            return "Извините, произошла ошибка при формировании ответа по сборке ПК."
+            return "Ошибка при формировании сборки. Попробуйте ещё раз."
 
 
 
@@ -513,138 +486,86 @@ class GPTService:
     def generate_product_response(context: list, products: list, is_detailed_query: bool = False) -> str:
         """
         Генерация ответа с рекомендацией товаров.
-
-        Args:
-            context: История сообщений
-            products: Список товаров
-            is_detailed_query: True если клиент просит аналоги/рекомендации, False для точных запросов
         """
         try:
-            # Формируем информацию о товарах с обеими ценами
-            products_info = "\n\n".join([
-                f"**{p['name']}**\n"
-                f"- Рассрочка: {float(p.get('credit', 0)):,} ₸\n"
-                f"- Скидка (карта/наличные): {float(p.get('bonus', 0)):,} ₸\n"
-                f"- Гарантия: {p.get('warranty', 'N/A')}\n"
-                f"- В наличии: {'да' if int(p.get('stock', 0)) > 0 else 'нет'}"
+            # Формируем компактную информацию о товарах
+            products_info = "\n".join([
+                f"• {p['name']} | {float(p.get('credit', 0)):,.0f}₸ (рассрочка) / {float(p.get('bonus', 0)):,.0f}₸ (скидка)"
                 for p in products[:5]
             ])
 
             user_message = context[-1]['content']
 
-            # Адаптивный промпт в зависимости от типа запроса
-            if is_detailed_query:
-                system_prompt = """Ты - эксперт-консультант по электронике в интернет-магазине.
-Клиент просит аналоги или рекомендации. Дай развернутый ответ.
+            # Единый компактный промпт
+            system_prompt = """Ты - консультант магазина электроники. Отвечай КРАТКО и ПО ДЕЛУ.
 
-Твой ответ должен:
-1. Кратко подтвердить понимание запроса
-2. Представить 2-3 варианта с объяснением преимуществ каждого
-3. Дать конкретную рекомендацию
+ФОРМАТ ОТВЕТА (строго):
+**Название товара**
+💰 Рассрочка: X ₸ | Скидка: Y ₸
 
-Для каждого товара ОБЯЗАТЕЛЬНО указывай:
-- Название
-- Две цены: рассрочка (по умолчанию) и скидка (при оплате картой/наличными)
-- Гарантию
-- Ключевые преимущества
-
-Формат:
-- Используй эмодзи для визуальности (✅, 💰, ⚡, 🎮)
-- Выдели ключевые преимущества
-- Укажи для кого подходит каждый вариант
-
-Будь дружелюбным и профессиональным."""
-            else:
-                system_prompt = """Ты - консультант интернет-магазина электроники.
-Клиент спрашивает конкретную модель. Дай КОРОТКИЙ и ТОЧНЫЙ ответ.
-
-Формат ответа (БЕЗ ЛИШНИХ СЛОВ):
-
-**[Название товара]**
-💳 Рассрочка: [цена] ₸
-💰 Скидка: [цена] ₸ (при оплате картой/наличными)
-🛡️ Гарантия: [период]
-
-Если товаров несколько - покажи ТОП-2 в таком же формате.
-Одно предложение в конце, если нужно пояснить разницу между моделями.
-
-НЕ пиши длинные описания! НЕ добавляй количество на складе!"""
+Максимум 2-3 товара. Одно предложение рекомендации в конце (если нужно).
+БЕЗ вступлений типа "Конечно!", "Отличный выбор!". Сразу к товарам."""
 
             messages = [{"role": "system", "content": system_prompt}]
-            messages.extend(context[:-1])
 
             messages.append({
                 "role": "user",
-                "content": f"""Запрос клиента: {user_message}
-
-Найденные товары:
-{products_info}
-
-{"Помоги выбрать лучший вариант с пояснениями." if is_detailed_query else "Дай короткий ответ с названием и ценами."}"""
+                "content": f"Запрос: {user_message}\n\nТовары:\n{products_info}"
             })
-
-            # Адаптивный max_tokens
-            max_tokens = 800 if is_detailed_query else 400
 
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=messages,
-                temperature=0.7,
-                max_tokens=max_tokens
+                temperature=0.5,
+                max_tokens=300
             )
 
             return response.choices[0].message.content
 
         except Exception as e:
             logger.error(f"Error generating product response: {e}", exc_info=True)
-            return "Извините, произошла ошибка при формировании ответа."
+            return "Произошла ошибка. Попробуйте ещё раз."
     
     @staticmethod
     def generate_faq_response(context: list, faq_context: str) -> str:
-        """Генерация ответа на FAQ"""
+        """Генерация короткого ответа на FAQ"""
         try:
-            system_prompt = f"""Ты - дружелюбный консультант интернет-магазина электроники.
-Отвечай на вопросы клиентов о доставке, оплате, возврате и других услугах магазина.
+            system_prompt = f"""Отвечай КРАТКО (2-3 предложения максимум). Только факты, без воды.
 
-Информация о магазине:
+Информация:
 {faq_context}
 
-Правила:
-- Будь вежливым и информативным
-- Отвечай кратко, но полно
-- Используй эмодзи для визуальности
-- Если информации нет в базе, предложи связаться с поддержкой"""
-            
+Если нет ответа — предложи позвонить: +7 (777) 123-45-67"""
+
             messages = _build_messages(system_prompt, context)
 
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=messages,
-                temperature=0.7,
-                max_tokens=500
+                temperature=0.5,
+                max_tokens=150
             )
 
             return response.choices[0].message.content
 
         except Exception as e:
             logger.error(f"Error generating FAQ response: {e}")
-            return "Извините, произошла ошибка. Свяжитесь с нашей поддержкой."
+            return "Позвоните нам: +7 (777) 123-45-67"
     
     @staticmethod
     def generate_general_response(context: list) -> str:
-        """Генерация общего ответа"""
+        """Генерация короткого общего ответа"""
         try:
-            system_prompt = """Ты - Роберт, дружелюбный ассистент интернет-магазина электроники Over.
-Помогай клиентам, отвечай на вопросы, направляй их к нужным товарам или услугам.
-Будь вежливым, профессиональным и полезным."""
-            
+            system_prompt = """Ты - ассистент магазина электроники. Отвечай КРАТКО (1-2 предложения).
+Помогай найти товар или ответь на вопрос. Без лишних слов."""
+
             messages = _build_messages(system_prompt, context)
 
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=messages,
-                temperature=0.8,
-                max_tokens=300
+                temperature=0.6,
+                max_tokens=100
             )
 
             return response.choices[0].message.content
@@ -656,30 +577,9 @@ class GPTService:
 
     @staticmethod
     def generate_budget_request(context: list, requirements: str, tier: str) -> str:
-        """Генерирует запрос бюджета у клиента."""
-        try:
-            system_prompt = f"""Ты — дружелюбный AI-консультант "Роберт". Клиент хочет собрать ПК, но не указал бюджет.
-            Твоя задача — вежливо уточнить у него максимальную сумму в тенге.
-
-            Требования клиента: {requirements}.
-            Предполагаемый сегмент: {tier}.
-
-            Ответь кратко, вежливо и с эмодзи. Не предлагай товаров, пока не узнаешь бюджет.
-            """
-
-            messages = [{"role": "system", "content": system_prompt}]
-            messages.extend(context)
-
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=messages,
-                temperature=0.7,
-                max_tokens=200
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            logger.error(f"Error generating budget request: {e}")
-            return "Я вижу, вы хотите собрать ПК! Пожалуйста, укажите ваш максимальный бюджет в тенге (например, 'до 500 000 ₸'), чтобы я мог начать подбор. 💰"
+        """Генерирует короткий запрос бюджета."""
+        # Простой статичный ответ без вызова GPT - быстрее и компактнее
+        return "💰 Укажите бюджет на сборку (например: до 500000 тенге)"
 
     @staticmethod
     def analyze_image(image_data: bytes, user_message: str = "") -> dict:
