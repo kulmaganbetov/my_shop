@@ -285,7 +285,7 @@ def chat_assistant(request):
             logger.info(f"PC Build requested: tier={build_tier}, reqs={user_requirements}, budget={budget}, peripherals={include_peripherals}")
 
             # 1. Получаем все необходимые компоненты из БД с умной фильтрацией
-            all_products_by_category = ProductSearchService.get_components_for_build(
+            all_products_by_category, category_targets = ProductSearchService.get_components_for_build(
                 budget=budget,
                 tier=build_tier,
                 include_peripherals=include_peripherals
@@ -361,7 +361,8 @@ def chat_assistant(request):
                         user_requirements,
                         build_tier,
                         max_budget=budget,
-                        include_peripherals=include_peripherals
+                        include_peripherals=include_peripherals,
+                        category_targets=category_targets
                     )
                 except Exception as e:
                     logger.error(f"GPT component selection failed: {e}", exc_info=True)
@@ -387,7 +388,39 @@ def chat_assistant(request):
                             selected_build_details = {} 
                             break 
 
-                # 4. Генерируем финальный ответ
+                # 4. Пост-валидация бюджета
+                if len(selected_build_details) == len(required_categories):
+                    total_price = sum(float(item.get('credit', 0)) for item in selected_build_details.values())
+
+                    if budget and total_price > budget:
+                        overage_percent = ((total_price - budget) / budget) * 100
+                        logger.warning(f"Build exceeds budget by {overage_percent:.1f}%: {total_price:,.0f} ₸ vs {budget:,} ₸")
+
+                        # Если превышение больше 15%, пытаемся найти более дешёвые альтернативы
+                        if overage_percent > 15:
+                            logger.info("Attempting to find cheaper alternatives...")
+                            # Пересортировываем и выбираем более дешевые варианты
+                            for category in selected_build_details.keys():
+                                if category in all_products_by_category:
+                                    current_price = float(selected_build_details[category].get('credit', 0))
+                                    target = category_targets.get(category, current_price)
+
+                                    # Ищем более дешевую альтернативу близко к целевой цене
+                                    cheaper_options = [
+                                        p for p in all_products_by_category[category]
+                                        if float(p.get('credit', 0)) <= target * 1.1 and float(p.get('credit', 0)) < current_price
+                                    ]
+                                    if cheaper_options:
+                                        # Берем ближайший к целевой цене
+                                        cheaper_options.sort(key=lambda p: abs(float(p.get('credit', 0)) - target))
+                                        selected_build_details[category] = cheaper_options[0]
+                                        logger.info(f"Replaced {category}: {current_price:,.0f} -> {float(cheaper_options[0].get('credit', 0)):,.0f} ₸")
+
+                            # Пересчитываем сумму
+                            total_price = sum(float(item.get('credit', 0)) for item in selected_build_details.values())
+                            logger.info(f"After optimization: {total_price:,.0f} ₸")
+
+                # 5. Генерируем финальный ответ
                 if len(selected_build_details) == len(required_categories):
                     response_text = GPTService.generate_pc_build_response(
                         current_context,

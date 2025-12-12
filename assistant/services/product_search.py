@@ -188,13 +188,18 @@ class ProductSearchService:
 
         build_products = {}
 
+        # Сохраняем целевые цены для передачи в GPT
+        category_targets = {}
+
         for category_name in required_categories:
             # Определяем диапазон цен для категории
             if budget and isinstance(budget, (int, float)):
                 category_budget = budget * budget_allocation.get(category_name, 0.15)
-                # Добавляем гибкость ±30%
-                min_price = category_budget * 0.5
-                max_price = category_budget * 1.5
+                # Сохраняем целевую цену для GPT
+                category_targets[category_name] = category_budget
+                # Добавляем гибкость ±20% (было ±50%)
+                min_price = category_budget * 0.7
+                max_price = category_budget * 1.2
             else:
                 # Если бюджет не указан, используем стандартные диапазоны по tier
                 price_ranges = {
@@ -241,4 +246,4 @@ class ProductSearchService:
             else:
                 logger.warning(f"No in-stock products found for category: {category_name}")
 
-        return build_products
+        return build_products, category_targets

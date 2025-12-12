@@ -105,7 +105,8 @@ class GPTService:
     @staticmethod
     def select_pc_components(all_products_by_category: dict, user_requirements: str,
                            budget_tier: str, max_budget: int = None,
-                           include_peripherals: bool = False) -> dict:
+                           include_peripherals: bool = False,
+                           category_targets: dict = None) -> dict:
         """
         Выбирает оптимальные компоненты для сборки ПК с улучшенной логикой.
 
@@ -115,7 +116,10 @@ class GPTService:
         - Проверка совместимости компонентов
         - Балансировка CPU/GPU
         - Поддержка периферии (мониторы, мыши, клавиатуры)
+        - Целевые цены для каждой категории
         """
+        if category_targets is None:
+            category_targets = {}
 
         try:
             # Подготовка компактного списка товаров для GPT
@@ -129,12 +133,20 @@ class GPTService:
                 if not products:
                     continue
 
-                # Сортируем по цене
-                sorted_products = sorted(
-                    products,
-                    key=lambda p: float(p.get('credit', 0)),
-                    reverse=sort_reverse
-                )
+                # Сортируем по цене - для бюджетной сборки выбираем ближе к целевой цене
+                target_price = category_targets.get(category, 0)
+                if target_price > 0:
+                    # Сортируем по близости к целевой цене
+                    sorted_products = sorted(
+                        products,
+                        key=lambda p: abs(float(p.get('credit', 0)) - target_price)
+                    )
+                else:
+                    sorted_products = sorted(
+                        products,
+                        key=lambda p: float(p.get('credit', 0)),
+                        reverse=sort_reverse
+                    )
 
                 # Создаем компактное представление с дополнительной информацией
                 compact_products = []
@@ -196,7 +208,11 @@ class GPTService:
 
                     compact_products.append(product_info)
 
-                LIMITED_PRODUCTS[category] = compact_products
+                # Добавляем информацию о категории с целевой ценой
+                LIMITED_PRODUCTS[category] = {
+                    "target_price": int(target_price) if target_price else None,
+                    "products": compact_products
+                }
 
             products_str = json.dumps(LIMITED_PRODUCTS, ensure_ascii=False, indent=2)
 
@@ -237,6 +253,13 @@ class GPTService:
   "твердотельные диски (ssd)": "44444"
 }"""
 
+            # Формируем информацию о целевых ценах
+            target_prices_info = ""
+            if category_targets:
+                target_prices_info = "\n**ЦЕЛЕВЫЕ ЦЕНЫ ПО КАТЕГОРИЯМ:**\n"
+                for cat, target in category_targets.items():
+                    target_prices_info += f"- {cat}: ~{int(target):,} ₸\n"
+
             # Улучшенный system prompt с детальными инструкциями
             system_prompt = f"""Ты — эксперт по сборке ПК. Подбери оптимальную сборку из предоставленных компонентов.
 
@@ -244,13 +267,15 @@ class GPTService:
 Сегмент: {budget_tier}
 Требования: {user_requirements}
 Периферия: {"ДА (монитор, мышь, клавиатура)" if include_peripherals else "НЕТ (только системный блок)"}
-
+{target_prices_info}
 КРИТЕРИИ ВЫБОРА:
 
-1. **БЮДЖЕТ** (КРИТИЧНО):
+1. **БЮДЖЕТ** (КРИТИЧНО - САМОЕ ВАЖНОЕ!):
    - Общая стоимость = сумма всех {component_count} компонентов
-   - Если бюджет указан: НЕ превышай его!
-   - Используй максимум бюджета (±5%)
+   - {"СУММА ВСЕХ КОМПОНЕНТОВ НЕ ДОЛЖНА превышать " + f"{max_budget:,}" + " ₸!" if max_budget else "Бюджет не задан - выбирай оптимальное соотношение цена/качество"}
+   - Каждая категория имеет "target_price" - выбирай компоненты БЛИЗКО к этой цене
+   - НЕЛЬЗЯ выбирать все компоненты по верхней границе - иначе превысишь бюджет
+   - Если видишь, что сумма превышает бюджет - выбирай более дешевые варианты
 
 2. **СОВМЕСТИМОСТЬ** (ОБЯЗАТЕЛЬНО):
    - CPU и Материнская плата: socket должны совпадать (AM4, AM5, LGA1700, LGA1200)
@@ -276,7 +301,9 @@ class GPTService:
 Верни ТОЛЬКО JSON с SKU (без объяснений):
 {json_format}
 
-ВАЖНО: Используй ТОЛЬКО SKU из предоставленного списка!"""
+ВАЖНО:
+- Используй ТОЛЬКО SKU из предоставленного списка!
+- {"СНАЧАЛА посчитай общую сумму выбранных компонентов, и ТОЛЬКО если она <= " + f"{max_budget:,}" + " ₸, верни JSON!" if max_budget else "Выбери компоненты близко к целевым ценам!"}"""
 
             messages = [
                 {"role": "system", "content": system_prompt},
