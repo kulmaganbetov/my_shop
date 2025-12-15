@@ -411,81 +411,76 @@ JSON ПРИМЕРЫ:
 
     @staticmethod
     def select_best_products(products: list, user_query: str, requirements: dict) -> list:
-        """Выбор наиболее подходящих товаров"""
+        """
+        Выбор наиболее подходящих товаров.
+        Товары уже отсортированы по релевантности (близость к бюджету).
+        """
         if not products:
             return []
-        
+
+        # Берём первые 10 товаров (уже отсортированы по релевантности)
+        products_to_analyze = products[:10]
+
+        # Если товаров мало или запрос простой - возвращаем без GPT
+        if len(products_to_analyze) <= 3:
+            return products_to_analyze
+
         try:
-            products_to_analyze = products[:20]
-            
+            # Компактное представление товаров для GPT
+            compact_products = [
+                f"{i+1}. {p.get('name', '')} | {float(p.get('credit', 0)):,.0f}₸ | SKU:{p.get('sku')}"
+                for i, p in enumerate(products_to_analyze)
+            ]
+
+            budget = requirements.get('budget')
+            budget_info = f"Бюджет клиента: {budget:,}₸. " if budget else ""
+
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {
                         "role": "system",
-                        "content": """Ты - эксперт по подбору электроники.
-Проанализируй товары и выбери 3-5 наиболее подходящих для запроса пользователя.
-
-Учитывай:
-- Соответствие бюджету (используй поле **credit**)
-- Соответствие требованиям пользователя
-- Наличие на складе (поле stock > 0)
-- Соотношение цена/качество
-- Популярность бренда (Intel, AMD, Samsung и т.д.)
-
-Верни JSON массив с SKU выбранных товаров в порядке приоритета:
-["sku1", "sku2", "sku3"]
-
-Если бюджет указан, не включай товары дороже бюджета, используя поле **credit**."""
+                        "content": f"""Выбери 2-3 лучших товара для запроса клиента.
+{budget_info}Товары УЖЕ отсортированы по цене (дорогие первые = лучше используют бюджет).
+Выбирай товары которые СООТВЕТСТВУЮТ запросу по названию/модели.
+Верни ТОЛЬКО JSON: ["sku1", "sku2"]"""
                     },
                     {
                         "role": "user",
                         "content": f"""Запрос: {user_query}
-Требования: {json.dumps(requirements, ensure_ascii=False)}
 
 Товары:
-{json.dumps(products_to_analyze, ensure_ascii=False, indent=2)}"""
+{chr(10).join(compact_products)}"""
                     }
                 ],
-                temperature=0.5,
-                max_tokens=200
+                temperature=0.3,
+                max_tokens=100
             )
-            
-            raw_content = response.choices[0].message.content.strip()
-            selected_skus = []
-            
-            try:
-                # Попытка загрузить JSON
-                parsed_json = json.loads(raw_content)
-                if isinstance(parsed_json, list):
-                    selected_skus = parsed_json
-            except json.JSONDecodeError:
-                logger.warning(f"GPT returned invalid JSON for selection: {raw_content[:100]}...")
-                # Fallback: Если JSON невалиден, логика автоматически перейдет в блок except,
-                # где мы вернем первые 5 продуктов.
-                pass
-            
-            
-            selected_products = [p for p in products if p.get("sku") in selected_skus]
-            
-            # Если GPT выбрал SKU, сортируем по его порядку
-            if selected_skus:
-                 # Используем list.index() только если sku находится в selected_skus
-                 selected_products.sort(key=lambda x: selected_skus.index(x.get("sku")) if x.get("sku") in selected_skus else len(selected_skus))
-            
-            # Дополнительный Fallback: Если выбранных товаров меньше 5 или GPT вернул невалидный JSON,
-            # мы гарантируем, что у нас есть хотя бы 5 первых товаров.
-            if not selected_products and products:
-                selected_products = products[:5]
 
-            logger.info(f"Selected {len(selected_products)} products")
-            return selected_products
-            
+            raw_content = response.choices[0].message.content.strip()
+
+            # Извлекаем JSON
+            if '```' in raw_content:
+                raw_content = re.sub(r'```json?\s*|\s*```', '', raw_content).strip()
+
+            selected_skus = json.loads(raw_content)
+
+            if isinstance(selected_skus, list) and selected_skus:
+                selected_products = [p for p in products_to_analyze if p.get("sku") in selected_skus]
+                # Сортируем по порядку GPT
+                selected_products.sort(
+                    key=lambda x: selected_skus.index(x.get("sku")) if x.get("sku") in selected_skus else 999
+                )
+                if selected_products:
+                    logger.info(f"GPT selected {len(selected_products)} products: {selected_skus}")
+                    return selected_products
+
         except Exception as e:
-            logger.error(f"Error selecting products: {e}")
-            # В случае ЛЮБОЙ ошибки, гарантируем возврат хотя бы первых 5 товаров для генерации ответа
-            return products[:5]
-    
+            logger.warning(f"GPT selection failed: {e}, using fallback")
+
+        # Fallback: первые 3 товара (уже отсортированы по релевантности)
+        return products_to_analyze[:3]
+
     @staticmethod
     def generate_product_response(context: list, products: list, is_detailed_query: bool = False) -> str:
         """

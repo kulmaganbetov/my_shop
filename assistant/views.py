@@ -212,32 +212,46 @@ def chat_assistant(request):
             search_query = analysis.get("search_query", "").strip() 
             budget = analysis.get("budget")
             
-            logger.info(f"Searching products: category={category}, query={search_query}")
-            
+            logger.info(f"Searching products: category={category}, query={search_query}, budget={budget}")
+
             # --- 1. Основной поиск (с запросом и категорией) ---
             products = ProductSearchService.search(
                 query=search_query,
                 category=category
             )
-            
+
             # --- 2. Запасной поиск (Fallback Strategy) ---
             # Fallback только для ОБЫЧНЫХ запросов, не для прямого SKU (который и так точен)
             if not products and category and search_query and not forced_sku:
                 logger.warning(f"Primary search failed (q='{search_query}'). Retrying search using only category.")
                 products = ProductSearchService.search(
                     query="", # Очищаем ограничивающий запрос
-                    category=category 
+                    category=category
                 )
-            
-            # ----------------------------------------------------
-            
-            # Фильтруем по бюджету если указан
-            if budget and products:
-                products = ProductSearchService.filter_by_price(products, budget)
-                logger.info(f"Filtered by budget {budget}: {len(products)} products")
-            
+
             # Фильтруем только товары в наличии
             products = ProductSearchService.filter_in_stock(products)
+
+            # --- 3. Умная фильтрация по бюджету ---
+            if budget and products:
+                budget = float(budget)
+                # Фильтруем товары в диапазоне 50%-100% от бюджета
+                # Это даёт товары БЛИЗКО к бюджету, а не самые дешёвые
+                min_price = budget * 0.5
+                products = ProductSearchService.filter_by_price(products, max_price=budget, min_price=min_price)
+                logger.info(f"Filtered by budget range {min_price:.0f}-{budget:.0f}: {len(products)} products")
+
+                # Если ничего не нашли в диапазоне 50-100%, расширяем до 30-100%
+                if not products:
+                    products = ProductSearchService.filter_in_stock(
+                        ProductSearchService.search(query=search_query, category=category)
+                    )
+                    min_price = budget * 0.3
+                    products = ProductSearchService.filter_by_price(products, max_price=budget, min_price=min_price)
+                    logger.info(f"Extended range {min_price:.0f}-{budget:.0f}: {len(products)} products")
+
+                # Сортируем по близости к бюджету (дорогие сверху - лучше используют бюджет)
+                products = sorted(products, key=lambda p: float(p.get('credit', 0)), reverse=True)
             
             if products:
                 # ШАГ 3: Выбираем лучшие товары через GPT
