@@ -50,18 +50,31 @@ def chat_assistant(request):
     start_time = time.time()
 
     try:
-        # Проверяем, есть ли файл в запросе
-        uploaded_file = request.FILES.get('file')
+        # Определяем тип запроса по Content-Type
+        content_type = request.content_type or ''
 
-        if uploaded_file:
-            # Обработка FormData
+        if 'multipart/form-data' in content_type:
+            # Обработка FormData (с файлами)
+            uploaded_file = request.FILES.get('file')
             user_message = request.POST.get("message", "").strip()
             session_id = request.POST.get("session_id")
-        else:
+        elif 'application/json' in content_type:
             # Обработка JSON
+            uploaded_file = None
             data = json.loads(request.body)
             user_message = data.get("message", "").strip()
             session_id = data.get("session_id")
+        else:
+            # Fallback: пробуем как FormData
+            uploaded_file = request.FILES.get('file') if request.FILES else None
+            if request.POST:
+                user_message = request.POST.get("message", "").strip()
+                session_id = request.POST.get("session_id")
+            else:
+                # Пробуем JSON
+                data = json.loads(request.body)
+                user_message = data.get("message", "").strip()
+                session_id = data.get("session_id")
 
         if not user_message and not uploaded_file:
             return JsonResponse({
