@@ -79,31 +79,40 @@ ALL_CATEGORIES = [
     "карты памяти",
     "блоки питания",
     "канцтовары",
-    "ноутбуки"
-    "материнские платы"
-    "Твердотельные диски (SSD)"
+    "ноутбуки",
+    "материнские платы",
+    "твердотельные диски (ssd)",
+    "мыши",
+    "клавиатуры",
+    "веб-камеры",
+    "внешние hdd/ssd",
+    "кабели",
+    "маршрутизаторы",
+    "коврики для мыши",
+    "коммутаторы",
 ]
 
 
 def normalize_category(category_input: str) -> str:
     """
     Нормализация категории
-    
+
     Args:
         category_input: строка категории от пользователя
-        
+
     Returns:
         str: нормализованная категория или пустая строка
     """
     if not category_input:
         return ""
-    
+
     category_lower = category_input.lower().strip()
-    
-    # Прямое совпадение
-    if category_lower in ALL_CATEGORIES:
-        return category_lower
-    
+
+    # Прямое совпадение (case-insensitive)
+    for cat in ALL_CATEGORIES:
+        if cat.lower() == category_lower:
+            return cat
+
     # Поиск в карте
     return CATEGORIES_MAP.get(category_lower, "")
 
