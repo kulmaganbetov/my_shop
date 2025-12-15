@@ -207,84 +207,146 @@ def chat_assistant(request):
         response_text = ""
         
         # ШАГ 2: Обрабатываем в зависимости от намерения
-        if intent == "product_search":
+
+        # --- FOLLOW-UP: уточнение предыдущего поиска ---
+        if intent == "follow_up":
+            follow_up_type = analysis.get("follow_up_type", "more_options")
+            search_ctx = session.search_context
+
+            if not search_ctx:
+                response_text = "Сначала выберите категорию товаров. Например: 'ноутбуки до 500000' или 'процессор AMD'"
+            else:
+                # Восстанавливаем параметры предыдущего поиска
+                category = search_ctx.get("category", "")
+                search_query = search_ctx.get("search_query", "")
+                prev_min = search_ctx.get("min_price", 0)
+                prev_max = search_ctx.get("max_price")
+                shown_prices = search_ctx.get("shown_prices", [])
+
+                logger.info(f"Follow-up '{follow_up_type}': prev range {prev_min}-{prev_max}, shown: {shown_prices}")
+
+                # Модифицируем диапазон цен в зависимости от типа запроса
+                if follow_up_type == "more_expensive" and shown_prices:
+                    # "Дороже" - ищем выше максимальной показанной цены
+                    new_min = max(shown_prices) + 1
+                    new_max = prev_max  # Не превышаем исходный бюджет
+                    if new_min >= new_max:
+                        response_text = f"К сожалению, в вашем бюджете до {int(prev_max):,}₸ нет товаров дороже. Хотите увеличить бюджет?"
+                        products = []
+                    else:
+                        products = ProductSearchService.search(query=search_query, category=category)
+                        products = ProductSearchService.filter_in_stock(products)
+                        products = ProductSearchService.filter_by_price(products, max_price=new_max, min_price=new_min)
+                        products = sorted(products, key=lambda p: float(p.get('credit', 0)), reverse=True)
+
+                elif follow_up_type == "cheaper" and shown_prices:
+                    # "Дешевле" - ищем ниже минимальной показанной цены
+                    new_max = min(shown_prices) - 1
+                    new_min = prev_min * 0.5 if prev_min else 0
+                    if new_max <= new_min:
+                        response_text = f"Нет товаров дешевле {int(min(shown_prices)):,}₸ в этой категории."
+                        products = []
+                    else:
+                        products = ProductSearchService.search(query=search_query, category=category)
+                        products = ProductSearchService.filter_in_stock(products)
+                        products = ProductSearchService.filter_by_price(products, max_price=new_max, min_price=new_min)
+                        products = sorted(products, key=lambda p: float(p.get('credit', 0)), reverse=True)
+
+                else:  # more_options
+                    # "Ещё варианты" - исключаем уже показанные SKU
+                    shown_skus = search_ctx.get("shown_skus", [])
+                    products = ProductSearchService.search(query=search_query, category=category)
+                    products = ProductSearchService.filter_in_stock(products)
+                    if prev_max:
+                        products = ProductSearchService.filter_by_price(products, max_price=prev_max, min_price=prev_min)
+                    # Исключаем уже показанные
+                    products = [p for p in products if p.get("sku") not in shown_skus]
+                    products = sorted(products, key=lambda p: float(p.get('credit', 0)), reverse=True)
+
+                # Генерируем ответ если есть товары
+                if products:
+                    selected_products = products[:3]
+
+                    # Обновляем контекст
+                    new_prices = [float(p.get('credit', 0)) for p in selected_products]
+                    new_skus = [p.get('sku') for p in selected_products]
+                    session.search_context = {
+                        **search_ctx,
+                        "shown_prices": shown_prices + new_prices,
+                        "shown_skus": search_ctx.get("shown_skus", []) + new_skus
+                    }
+                    session.save()
+
+                    response_text = GPTService.generate_product_response(current_context, selected_products)
+                    products = selected_products
+                elif not response_text:
+                    response_text = "К сожалению, больше вариантов в этом диапазоне нет. Попробуйте изменить бюджет."
+
+        # --- PRODUCT_SEARCH: новый поиск ---
+        elif intent == "product_search":
             category = analysis.get("category", "")
-            search_query = analysis.get("search_query", "").strip() 
+            search_query = analysis.get("search_query", "").strip()
             budget = analysis.get("budget")
-            
+
             logger.info(f"Searching products: category={category}, query={search_query}, budget={budget}")
 
-            # --- 1. Основной поиск (с запросом и категорией) ---
-            products = ProductSearchService.search(
-                query=search_query,
-                category=category
-            )
+            # --- 1. Основной поиск ---
+            products = ProductSearchService.search(query=search_query, category=category)
 
-            # --- 2. Запасной поиск (Fallback Strategy) ---
-            # Fallback только для ОБЫЧНЫХ запросов, не для прямого SKU (который и так точен)
+            # --- 2. Fallback ---
             if not products and category and search_query and not forced_sku:
-                logger.warning(f"Primary search failed (q='{search_query}'). Retrying search using only category.")
-                products = ProductSearchService.search(
-                    query="", # Очищаем ограничивающий запрос
-                    category=category
-                )
+                logger.warning(f"Primary search failed. Retrying with category only.")
+                products = ProductSearchService.search(query="", category=category)
 
-            # Фильтруем только товары в наличии
             products = ProductSearchService.filter_in_stock(products)
 
             # --- 3. Умная фильтрация по бюджету ---
+            min_price = 0
+            max_price = None
             if budget and products:
                 budget = float(budget)
-                # Фильтруем товары в диапазоне 50%-100% от бюджета
-                # Это даёт товары БЛИЗКО к бюджету, а не самые дешёвые
+                max_price = budget
                 min_price = budget * 0.5
-                products = ProductSearchService.filter_by_price(products, max_price=budget, min_price=min_price)
+                products = ProductSearchService.filter_by_price(products, max_price=max_price, min_price=min_price)
                 logger.info(f"Filtered by budget range {min_price:.0f}-{budget:.0f}: {len(products)} products")
 
-                # Если ничего не нашли в диапазоне 50-100%, расширяем до 30-100%
                 if not products:
                     products = ProductSearchService.filter_in_stock(
                         ProductSearchService.search(query=search_query, category=category)
                     )
                     min_price = budget * 0.3
-                    products = ProductSearchService.filter_by_price(products, max_price=budget, min_price=min_price)
-                    logger.info(f"Extended range {min_price:.0f}-{budget:.0f}: {len(products)} products")
+                    products = ProductSearchService.filter_by_price(products, max_price=max_price, min_price=min_price)
 
-                # Сортируем по близости к бюджету (дорогие сверху - лучше используют бюджет)
                 products = sorted(products, key=lambda p: float(p.get('credit', 0)), reverse=True)
-            
+
             if products:
-                # ШАГ 3: Выбираем лучшие товары через GPT
-                requirements = {
-                    "budget": budget,
-                    "requirements": analysis.get("requirements", "")
-                }
-
-                selected_products = GPTService.select_best_products(
-                    products,
-                    user_message,
-                    requirements
-                )
-
-                # Определяем тип запроса для адаптивного ответа
+                requirements = {"budget": budget, "requirements": analysis.get("requirements", "")}
+                selected_products = GPTService.select_best_products(products, user_message, requirements)
                 is_detailed_query = analysis.get("is_detailed_query", False)
-
-                # ШАГ 4: Генерируем ответ с рекомендациями
-                response_text = GPTService.generate_product_response(
-                    current_context,
-                    selected_products,
-                    is_detailed_query=is_detailed_query
-                )
-
+                response_text = GPTService.generate_product_response(current_context, selected_products, is_detailed_query)
                 products = selected_products[:5]
-                
+
+                # --- СОХРАНЯЕМ КОНТЕКСТ ПОИСКА ---
+                shown_prices = [float(p.get('credit', 0)) for p in products]
+                shown_skus = [p.get('sku') for p in products]
+                session.search_context = {
+                    "category": category,
+                    "search_query": search_query,
+                    "min_price": min_price,
+                    "max_price": max_price,
+                    "shown_prices": shown_prices,
+                    "shown_skus": shown_skus
+                }
+                session.save()
+                logger.info(f"Saved search context: {session.search_context}")
+
             else:
-                response_text = """К сожалению, по вашему запросу не найдено подходящих товаров в наличии. 😔
+                response_text = f"""К сожалению, не найдено товаров по запросу.
 
 Попробуйте:
 • Изменить бюджет
-• Выбрать другую категорию товаров
-• Связаться с нами для индивидуальной консультации: +7 (777) 123-45-67"""
+• Уточнить категорию
+• Связаться с консультантом"""
 
 
 

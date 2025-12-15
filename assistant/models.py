@@ -24,6 +24,9 @@ class ChatSession(models.Model):
     client_name = models.CharField(max_length=100, blank=True, verbose_name='Имя клиента')
     client_phone = models.CharField(max_length=20, blank=True, verbose_name='Телефон клиента')
 
+    # Контекст последнего поиска для обработки follow-up вопросов
+    search_context = models.JSONField(null=True, blank=True, verbose_name='Контекст поиска')
+
     class Meta:
         verbose_name = 'Сессия чата'
         verbose_name_plural = 'Сессии чатов'

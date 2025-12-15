@@ -29,64 +29,59 @@ class GPTService:
     def analyze_query(context: list) -> dict:
         """Анализ запроса пользователя"""
         system_prompt = """Ты - аналитик запросов для интернет-магазина электроники.
-Твоя задача - понять намерение пользователя и извлечь параметры поиска.
-
-ВАЖНО - РАЗЛИЧАЙ ДВА ТИПА ЗАПРОСОВ:
-1. ГОТОВЫЕ УСТРОЙСТВА (intent: "product_search"):
-   - Ноутбуки, смартфоны, мониторы, мыши, клавиатуры - это ГОТОВЫЕ товары
-   - "нужен ноутбук", "ищу смартфон", "хочу телефон" → product_search
-   - "ноутбук для игр за 500000" → product_search (category: "ноутбуки")
-
-2. СБОРКА ПК ИЗ КОМПОНЕНТОВ (intent: "pc_build" или "pc_budget_ask"):
-   - ТОЛЬКО когда клиент хочет СОБРАТЬ компьютер из отдельных частей
-   - Ключевые слова: "собери ПК", "сборка компьютера", "собрать комп", "игровой ПК", "рабочий ПК"
-   - "собери мне ПК за 600000" → pc_build
-   - "хочу собрать компьютер" → pc_budget_ask (бюджет не указан)
-
-НЕ ПУТАЙ:
-- "ноутбук для игр" ≠ сборка ПК (это product_search для готового ноутбука!)
-- "смартфон за 200000" ≠ сборка ПК (это product_search!)
-- "собери игровой ПК" = сборка ПК (pc_build)
-
-Доступные категории: смартфоны, процессоры, видеокарты, мониторы, корпуса, карты памяти, блоки питания, ноутбуки, мыши, клавиатуры, веб-камеры, внешние hdd/ssd, кабели, маршрутизаторы, коврики для мыши, коммутаторы, твердотельные диски (ssd), материнские платы
-
-Нормализуй названия: айфон → iPhone, ртх → RTX, самсунг → Samsung
 
 INTENTS:
-- "product_search": поиск конкретного товара или категории (ноутбуки, смартфоны, комплектующие)
-- "pc_build": сборка ПК с УКАЗАННЫМ бюджетом
-- "pc_budget_ask": сборка ПК БЕЗ бюджета (нужно спросить)
-- "faq": вопросы о магазине, доставке, оплате, гарантии
-- "general": приветствия, благодарности, общение
+- "product_search": новый поиск товара (ноутбук, смартфон, процессор и т.д.)
+- "follow_up": уточнение предыдущего поиска (дороже, дешевле, ещё варианты)
+- "pc_build": сборка ПК с бюджетом
+- "pc_budget_ask": сборка ПК без бюджета
+- "faq": вопросы о магазине
+- "general": общение
+
+FOLLOW-UP ЗАПРОСЫ (intent: "follow_up"):
+Ключевые фразы:
+- "дороже", "подороже", "есть дорогие" → follow_up_type: "more_expensive"
+- "дешевле", "подешевле", "есть дешёвые" → follow_up_type: "cheaper"
+- "ещё", "другие", "ещё варианты", "что ещё есть" → follow_up_type: "more_options"
+- "в другом ценовом диапазоне" → follow_up_type: "price_change"
+
+Если клиент говорит "есть ещё дорогие?" после поиска ноутбуков → это follow_up, НЕ новый поиск!
+
+PRODUCT_SEARCH vs PC_BUILD:
+- "ноутбук", "смартфон", "монитор" → product_search (готовое устройство)
+- "собери ПК", "сборка компьютера" → pc_build (из компонентов)
+
+Категории: смартфоны, процессоры, видеокарты, мониторы, корпуса, блоки питания, ноутбуки, мыши, клавиатуры, твердотельные диски (ssd), материнские платы
 
 ПАРАМЕТРЫ:
 - intent: один из вышеуказанных
-- category: категория товара (только для product_search)
-- search_query: ключевые слова (бренд, модель)
-- budget: число в тенге или null
-- requirements: требования (для игр, для работы, для учебы)
-- build_tier: "budget"/"mid"/"high" (только для pc_build без бюджета)
-- is_detailed_query: true если просят рекомендации/сравнение/аналоги
-- include_peripherals: true если к сборке ПК нужна периферия
+- follow_up_type: "more_expensive"/"cheaper"/"more_options" (только для follow_up)
+- category: категория товара
+- search_query: ключевые слова
+- budget: число или null
+- is_detailed_query: true/false
 
 JSON ПРИМЕРЫ:
 
-Запрос: "нужен ноутбук для игр до 500000"
-{"intent": "product_search", "category": "ноутбуки", "search_query": "игровой", "budget": 500000, "requirements": "для игр", "is_detailed_query": true, "include_peripherals": false}
+"ноутбук до 500000"
+{"intent": "product_search", "category": "ноутбуки", "search_query": "", "budget": 500000}
 
-Запрос: "собери мне ПК на 600000"
-{"intent": "pc_build", "category": null, "search_query": "", "budget": 600000, "requirements": "", "is_detailed_query": false, "include_peripherals": false}
+"есть подороже?"
+{"intent": "follow_up", "follow_up_type": "more_expensive"}
 
-Запрос: "хочу собрать игровой компьютер"
-{"intent": "pc_budget_ask", "category": null, "search_query": "", "budget": null, "requirements": "для игр", "build_tier": "mid", "is_detailed_query": false, "include_peripherals": false}
+"а подешевле есть?"
+{"intent": "follow_up", "follow_up_type": "cheaper"}
 
-Запрос: "iPhone 15 Pro Max"
-{"intent": "product_search", "category": "смартфоны", "search_query": "iPhone 15 Pro Max", "budget": null, "requirements": "", "is_detailed_query": false, "include_peripherals": false}
+"ещё варианты"
+{"intent": "follow_up", "follow_up_type": "more_options"}
 
-Запрос: "RTX 4070"
-{"intent": "product_search", "category": "видеокарты", "search_query": "RTX 4070", "budget": null, "requirements": "", "is_detailed_query": false, "include_peripherals": false}
+"RTX 4070"
+{"intent": "product_search", "category": "видеокарты", "search_query": "RTX 4070"}
 
-Ответь ТОЛЬКО JSON без текста."""
+"собери ПК на 600000"
+{"intent": "pc_build", "budget": 600000}
+
+Ответь ТОЛЬКО JSON."""
         try:
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
