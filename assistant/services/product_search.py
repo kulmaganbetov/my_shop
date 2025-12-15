@@ -179,9 +179,9 @@ class ProductSearchService:
         return [p for p in products if int(p.get('stock', 0)) > 0]
 
     @classmethod
-    def filter_by_price(cls, products: list, min_price: float = None,
-                        max_price: float = None) -> list:
-        """Фильтр товаров по диапазону цен"""
+    def filter_by_price(cls, products: list, max_price: float = None,
+                        min_price: float = None) -> list:
+        """Фильтр товаров по диапазону цен (max_price первый для обратной совместимости)"""
         filtered = []
         min_p = float(min_price) if min_price else 0
         max_p = float(max_price) if max_price else float('inf')
