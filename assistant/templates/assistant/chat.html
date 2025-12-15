@@ -177,6 +177,7 @@
             const messagesContainer = document.getElementById('chatMessages');
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${isUser ? 'user' : 'assistant'}`;
+            const currentTime = formatTime(new Date());
 
             let content = '';
 
